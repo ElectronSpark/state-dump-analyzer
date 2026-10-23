@@ -36,6 +36,7 @@ function harness() {
     eventLogHoverModels: new Map(), hoverPinned: false, hoverKey: null };
   const window = { innerWidth: 608, innerHeight: 668, clearTimeout() {} };
   const byId = id => {
+    if (id === 'correlation-hover') return null;
     if (id === 'timeline-floating-header') return header;
     if (id === 'timeline-scroll') return scroll;
     assert.equal(id, 'timeline-hover'); return card;
@@ -48,7 +49,8 @@ function harness() {
   const start = source.indexOf('  document.addEventListener("scroll",');
   const end = source.indexOf('\n  window.addEventListener("resize",', start);
   assert.ok(start >= 0 && end > start);
-  new Function('document', 'byId', 'positionHover', source.slice(start, end))(document, byId, api.positionHover);
+  new Function('document', 'byId', 'positionHover', 'positionCorrelationHover', source.slice(start, end))(
+    document, byId, api.positionHover, () => {});
   return { api, state, window, document, byId, card, control, detail, marker, key,
     move: value => { rectangle = rect(rectangle.left, value, rectangle.width, rectangle.height); },
     setRect: value => { rectangle = value; }, replace: value => { current = value; },

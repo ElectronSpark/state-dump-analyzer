@@ -51,6 +51,216 @@ function dom() {
 const cleanPath = (extra = {}) => ({ path_id: "active", activity: "active", selection: "selected",
   completeness: "complete", consistency: "consistent", disposition: "forward", segments: [], ...extra });
 
+function servicePopupHarness() {
+  const { byId, document } = dom();
+  const rect = (left, top, width, height) => ({ left, top, width, height, right: left + width, bottom: top + height });
+  let anchorRect = rect(300, 200, 210, 40), serial = 0;
+  document.body = byId("body");
+  document.activeElement = document.body;
+  document.body.append = (element) => { element.parentElement = document.body; };
+  document.querySelector = (selector) => selector === ".topbar"
+    ? { getBoundingClientRect: () => rect(0, 0, 1265, 76) } : null;
+  const container = byId("mn-route-presentations"), card = byId("mn-route-hover-card");
+  // Model the browser's replacement semantics: removed buttons disconnect and
+  // focused descendants fall back to BODY, rather than remaining usable mocks.
+  for (const element of [container, card]) {
+    let markup = "", children = [];
+    element.writes = 0;
+    element.style = {};
+    element.scrollTop = 0;
+    element.scrollHeight = 700;
+    element.parentElement = document.body;
+    element.contains = (target) => target === element || children.includes(target);
+    element.querySelectorAll = () => children;
+    element.querySelector = () => children[0] || null;
+    Object.defineProperty(element, "innerHTML", {
+      get: () => markup,
+      set(value) {
+        if (children.includes(document.activeElement)) document.activeElement = document.body;
+        children.forEach((child) => { child.isConnected = false; });
+        markup = value;
+        element.writes++;
+        children = [...value.matchAll(/<button\b[^>]*>/g)].map(([tag]) => {
+          const button = byId(`service-button-${++serial}`);
+          const groupId = /data-route-presentation-trigger="([^"]+)"/.exec(tag)?.[1];
+          if (groupId) button.dataset.routePresentationTrigger = groupId;
+          button.getBoundingClientRect = () => anchorRect;
+          button.closest = () => null;
+          return button;
+        });
+      },
+    });
+  }
+  card.hidden = true;
+  const layer = { presentation_id: "service", group_id: "service:blue", role: "overlay", scope: "path", style: "band",
+    label: "Blue service", facts: [{ label: "Remote VTEP", value: "10.254.0.2" }] };
+  const paths = [cleanPath({ path_id: "primary", presentations: [layer] }),
+    cleanPath({ path_id: "alternate", presentations: [{ ...layer, facts: [{ label: "Remote VTEP", value: "10.254.0.5" }] }] })];
+  const state = { routeTrace: { paths }, activeRouteDirection: "forward", routeGraphMode: "all", selectedRoutePathId: "",
+    previewRoutePathId: "", previewRoutePresentationId: "", routePresentationPinned: false,
+    routePresentationTrigger: null, resizeTargets: new Set(), resizeFrame: null };
+  const frames = [];
+  const noop = () => {};
+  const deps = { byId, document, state, window: { innerWidth: 1265, innerHeight: 720, PointerEvent: class {} },
+    clearTimeout: noop, setTimeout: noop, cancelAnimationFrame: noop,
+    requestAnimationFrame: (fn) => { frames.push(fn); return frames.length; },
+    selectedRoutePath: () => state.routeGraphMode === "focused" ? state.routeTrace?.paths[0] || null : null,
+    renderDirectionTabs: noop, renderRouteSeed: noop, updateRouteViewChrome: noop, renderRouteOutcome: noop,
+    renderRoutePacketEvolution: noop, renderUnselectedRoutePathTabs: noop,
+    allPathGraphNodes: () => [], selectedResultNodes: () => [], applyRouteHighlights: noop, applyOverviewPathEmphasis: noop,
+    routePathPreviewMarkup: () => "Path details",
+    renderRouteDirectionalDifference: () => null, routePathMatchesDirectionalDifference: () => false,
+    routeNodeSequence: () => [], routePathNodeRefs: () => [], routeFlowEndpointLabel: () => "Router",
+    routeTraceStartLabel: () => "Router", renderNodeGraph: noop,
+  };
+  const api = load(["renderRoutePresentations", "showRoutePresentationPreview", "positionRoutePathPreview",
+    "renderFocusedRouteMap", "renderRouteTrace", "clearRoutePresentationPreview", "showRoutePathPreview"], deps);
+  api.renderRoutePresentations(paths);
+  const activate = () => {
+    const trigger = container.querySelector();
+    trigger.focus();
+    trigger.fire("keydown", { key: " ", preventDefault() {} });
+    return trigger;
+  };
+  return { api, deps, state, document, byId, container, card, paths, frames, activate, rect,
+    move: (value) => { anchorRect = value; } };
+}
+
+test("LV01: page scroll dismisses a clipped service pin, while detail scrolling retains the anchor and reading position", () => {
+  const h = servicePopupHarness();
+  h.card.scrollHeight = 330;
+  const start = source.indexOf('  document.addEventListener("scroll",');
+  const end = source.indexOf("\n}", start);
+  h.document.addEventListener = (type, handler, options) => {
+    assert.equal(type, "scroll");
+    assert.deepEqual(options, { capture: true, passive: true });
+    h.document.scroll = handler;
+  };
+  const deps = { ...h.deps, ...h.api, scheduleTopologyInspectorPosition() {} };
+  new Function(...Object.keys(deps), source.slice(start, end))(...Object.values(deps));
+  h.activate();
+  h.card.scrollTop = 51;
+  const close = h.document.activeElement;
+  h.document.scroll({ target: h.card });
+  assert.equal(h.card.hidden, false);
+  assert.equal(h.card.scrollTop, 51);
+  assert.equal(h.document.activeElement, close);
+  h.move(h.rect(300, 130, 210, 40));
+  h.document.scroll({ target: h.document });
+  while (h.frames.length) h.frames.shift()();
+  assert.equal(h.card.style.top, "112px", "the card follows its visible document anchor");
+  h.move(h.rect(300, 10, 210, 40));
+  h.document.scroll({ target: h.document });
+  while (h.frames.length) h.frames.shift()();
+  assert.equal(h.card.hidden, true, "the sticky page header fully occludes the trigger");
+  assert.equal(h.state.routePresentationPinned, false);
+  h.move(h.rect(300, 200, 210, 40));
+  h.document.scroll({ target: h.document });
+  assert.equal(h.card.hidden, true, "scrolling back does not resurrect a dismissed context");
+});
+
+test("LV01: service popup rejects disconnected and fully off-screen anchors, while partial anchors remain usable", () => {
+  for (const rectangle of [null, [-250, 200, 210, 40], [1300, 200, 210, 40], [300, -50, 210, 40], [300, 730, 210, 40]]) {
+    const h = servicePopupHarness();
+    const trigger = h.activate();
+    if (rectangle) h.move(h.rect(...rectangle)); else trigger.isConnected = false;
+    h.api.positionRoutePathPreview(trigger);
+    assert.equal(h.card.hidden, true, `invalid anchor ${rectangle}`);
+    assert.equal(h.state.routePresentationTrigger, null);
+  }
+  const h = servicePopupHarness();
+  h.move(h.rect(300, 65, 210, 40));
+  h.activate();
+  assert.equal(h.card.hidden, false);
+  assert.ok(parseFloat(h.card.style.top) >= 88, "service details do not cover the sticky header");
+});
+
+test("LV01: short viewports bound service details below the header and shared path previews reclaim available height", () => {
+  const h = servicePopupHarness();
+  h.deps.window.innerHeight = 300;
+  const trigger = h.activate();
+  const top = parseFloat(h.card.style.top), maxHeight = parseFloat(h.card.style.maxHeight);
+  assert.ok(top >= 88);
+  assert.ok(top + maxHeight <= 288, "the whole scrollable dialog fits below the header and inside the viewport");
+  h.api.showRoutePathPreview("primary", trigger);
+  assert.equal(h.state.previewRoutePresentationId, "");
+  assert.equal(h.state.previewRoutePathId, "primary");
+  assert.ok(parseFloat(h.card.style.maxHeight) > maxHeight, "a path preview does not inherit the service header offset");
+  assert.ok(parseFloat(h.card.style.top) + parseFloat(h.card.style.maxHeight) <= 288);
+});
+
+test("LV02: passive service re-entry preserves pinned DOM, scroll and keyboard ownership; explicit activation enters it", () => {
+  const h = servicePopupHarness();
+  const trigger = h.activate();
+  const close = h.document.activeElement;
+  h.card.scrollTop = 51;
+  trigger.fire("pointerenter", { clientX: 320, clientY: 220 });
+  assert.equal(h.card.scrollTop, 51);
+  assert.equal(h.document.activeElement, close);
+  assert.equal(close.isConnected, true);
+  const zoom = h.byId("zoom-in");
+  zoom.focus();
+  const writes = h.card.writes;
+  for (let index = 0; index < 3; index++) {
+    trigger.fire("pointerenter", { clientX: 320, clientY: 220 });
+    trigger.fire("pointerleave");
+  }
+  assert.equal(h.card.writes, writes, "passive re-entry does not rebuild pinned contents");
+  assert.equal(h.card.scrollTop, 51);
+  assert.equal(h.document.activeElement, zoom, "pointer preview cannot steal keyboard focus from graph controls");
+  trigger.fire("keydown", { key: "Enter", preventDefault() {} });
+  assert.equal(h.document.activeElement, close, "explicit activation moves focus into the existing dialog");
+  assert.equal(h.card.scrollTop, 51);
+});
+
+test("LV03: delayed graph resize after service activation preserves the pin and trigger; semantic changes retire it", () => {
+  const h = servicePopupHarness();
+  let resize;
+  class ResizeObserver {
+    constructor(callback) { resize = callback; }
+    observe() {}
+  }
+  const start = source.indexOf('  if ("ResizeObserver" in window) {');
+  const end = source.indexOf('  document.addEventListener("scroll",', start);
+  const deps = { ...h.deps, ...h.api, window: { ...h.deps.window, ResizeObserver }, ResizeObserver, renderLinkStatusMap() {} };
+  new Function(...Object.keys(deps), source.slice(start, end))(...Object.values(deps));
+  // An All-path render starts its height transition. The service is activated
+  // before the ResizeObserver's next frame, matching rapid mode-switch input.
+  h.api.renderRouteTrace();
+  h.api.renderFocusedRouteMap();
+  resize([{ target: { id: "mn-route-map-stage" } }]);
+  const trigger = h.activate();
+  const close = h.document.activeElement;
+  h.card.scrollTop = 51;
+  const writes = [h.container.writes, h.card.writes];
+  for (let index = 0; index < 3; index++) {
+    while (h.frames.length) h.frames.shift()();
+    resize([{ target: { id: "mn-route-map-stage" } }]);
+  }
+  while (h.frames.length) h.frames.shift()();
+  assert.equal(h.card.hidden, false);
+  assert.equal(h.state.routePresentationPinned, true);
+  assert.equal(h.state.routePresentationTrigger, trigger);
+  assert.equal(trigger.isConnected, true);
+  assert.equal(h.document.activeElement, close);
+  assert.equal(h.card.scrollTop, 51);
+  assert.deepEqual([h.container.writes, h.card.writes], writes, "layout-only frames do not replace service UI");
+  h.state.activeRouteDirection = "reverse";
+  h.state.routeTrace = { paths: [{ ...h.paths[0], path_id: "return", presentations: [{ ...h.paths[0].presentations[0],
+    facts: [{ label: "Remote VTEP", value: "10.254.0.1" }] }] }] };
+  h.api.renderRouteTrace();
+  assert.equal(h.card.hidden, true, "a changed direction cannot retain the former context even with the same group ID");
+  assert.equal(trigger.isConnected, false);
+  h.activate();
+  assert.match(h.card.innerHTML, /10\.254\.0\.1/);
+  assert.doesNotMatch(h.card.innerHTML, /10\.254\.0\.[25]/);
+  h.state.routeTrace = null;
+  h.state.routeCapabilities = {};
+  h.api.renderRouteTrace();
+  assert.equal(h.card.hidden, true);
+  assert.equal(h.container.hidden, true);
+});
+
 test("path service context stays outside forwarding geometry and retains its details and path selection", () => {
   const { byId, document } = dom();
   const container = byId("mn-route-presentations");

@@ -233,6 +233,74 @@ class GeneratedAssemblyApiIntegrationTests(unittest.TestCase):
         self.assertNotIn("node-d", west_detached["node_ids"])
         self.assertIn("node-d", west_restored["node_ids"])
 
+    def test_route_rows_and_direct_traces_reject_future_evidence(self) -> None:
+        row_id = "node-a/route/inventory/generic-mpls_l3vpn-blue-vpnv4_unicast/node-b"
+        filters = {"node_id": "node-a", "vrf_id": "blue", "route_type": "mpls_l3vpn"}
+        trace = {
+            "scenario_id": "router-to-router", "source_id": "source:node-a",
+            "destination_id": "destination:node-b", "route_type": "mpls_l3vpn",
+            "vrf_id": "blue", "route_family": "vpnv4_unicast", "direction": "both",
+        }
+        for offset, available in ((100, False), (700, True), (100, False)):
+            with self.subTest(offset=offset):
+                basis = {"kind": "absolute_time", "time_ns": str(
+                    DEFAULT_SCENARIO_SOURCE.base_time_ns + offset * 1_000_000_000
+                )}
+                table = self.client.post("/v1/topologies/routes/tables/query", json={
+                    "basis": basis, "filters": filters,
+                })
+                self.assertEqual(table.status_code, 200, table.text)
+                self.assertEqual(row_id in {r["route_entry_id"] for r in table.json()["items"]}, available)
+                for seeded in (False, True):
+                    request = {**trace, "basis": basis}
+                    if seeded:
+                        request["route_entry_ref"] = {"route_entry_id": row_id}
+                    result = self.client.post("/v1/topologies/routes/trace", json=request)
+                    self.assertEqual(result.status_code, 200, result.text)
+                    payload = result.json()
+                    self.assertEqual(payload["reachable"], available)
+                    if not available:
+                        self.assertFalse(payload["route_table_entry_ids"])
+                        self.assertTrue(any(
+                            segment.get("state", {}).get("reason_code") == "route_evidence_outside_validity"
+                            for path in payload["paths"] for segment in path["segments"]
+                        ))
+
+    def test_typed_link_and_trace_follow_historical_carrier_status(self) -> None:
+        # Author a test projection valid over the history interval so this
+        # checks carrier reconstruction independently of snapshot-only routes.
+        route = self.route_demo
+        routes = copy.deepcopy(route._generated_route_rows)
+        forwarding = copy.deepcopy(route._generated_forwarding_rows)
+        for row in [*routes, *forwarding]:
+            row["valid_from_ns"] = str(DEFAULT_SCENARIO_SOURCE.base_time_ns - 1_000_000_000)
+        with mock.patch.object(route, "_generated_route_rows", routes), mock.patch.object(
+            route, "_generated_forwarding_rows", forwarding,
+        ):
+            for offset, usable in ((100, False), (243, True), (100, False)):
+                with self.subTest(offset=offset):
+                    result = self.client.post("/v1/topologies/routes/trace", json={
+                        "scenario_id": "router-to-router", "source_id": "source:transit-p-1",
+                        "destination_id": "destination:transit-p-2", "route_type": "isis_underlay",
+                        "basis": {"kind": "absolute_time", "time_ns": str(
+                            DEFAULT_SCENARIO_SOURCE.base_time_ns + offset * 1_000_000_000
+                        )}, "direction": "both",
+                    })
+                    self.assertEqual(result.status_code, 200, result.text)
+                    payload = result.json()
+                    self.assertEqual(payload["reachable"], usable)
+                    for direction in ("forward", "reverse"):
+                        boundaries = [
+                            segment for path in payload["traces"][direction]["paths"]
+                            for segment in path["segments"]
+                            if segment.get("segment_kind") == "inter_node_boundary"
+                        ]
+                        self.assertTrue(boundaries)
+                        self.assertTrue(all(
+                            segment["state"]["operational"] == ("usable" if usable else "unusable")
+                            for segment in boundaries
+                        ))
+
     def test_topology_and_route_tables_share_generated_revisions_and_projections(
         self,
     ) -> None:

@@ -236,7 +236,9 @@ function focusHarness(kind) {
     updateCorrelationState: noop, renderCorrelationTimeState: noop, renderGraph: noop,
   });
   current = new Marker(); api.bindHoverTarget(current);
-  install('  document.addEventListener("scroll",', '\n  window.addEventListener("resize",', { document, byId, positionHover: api.positionHover });
+  install('  document.addEventListener("scroll",', '\n  window.addEventListener("resize",', {
+    document, byId, positionHover: api.positionHover, positionCorrelationHover() {},
+  });
   install('  timelineScroll.addEventListener("scroll",', '\n  byId("resource-search")', {
     state, window, byId, timelineScroll: scroll, hideTimelineHoverLine: noop, closeTimelineContextMenu: noop,
     refreshDensityLaneForScroll: api.refreshDensityLaneForScroll, scheduleTimelineViewHistory: noop,

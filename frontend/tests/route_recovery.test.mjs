@@ -110,7 +110,7 @@ test("overview render computes verdict before the no-pinned-path early return", 
   h.state.routeTrace = { paths: [{ path_id: "p" }] };
   const noop = () => {};
   const dependencies = { state: h.state, byId: h.byId, document: { querySelector: () => ({}) },
-    renderDirectionTabs: noop, renderRouteSeed: noop, updateRouteViewChrome: noop,
+    renderDirectionTabs: noop, renderRouteSeed: noop, updateRouteViewChrome: noop, renderRoutePresentations: noop,
     renderRoutePacketEvolution: noop, renderRouteOutcome: h.render,
     selectedRoutePath: () => null, renderUnselectedRoutePathTabs: noop,
   };

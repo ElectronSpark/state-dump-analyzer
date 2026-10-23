@@ -1,0 +1,802 @@
+[
+  {
+    "id": 1,
+    "action": "Baseline latest-watermark primary trace",
+    "note": "",
+    "at": "2026-10-23T15:39:09.266Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=single-active-primary&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=default&route_family=mpls_labeled_unicast&route_type=mpls_transport&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=focused",
+    "snapshot": "001.txt"
+  },
+  {
+    "id": 2,
+    "action": "Inspect return direction at latest",
+    "note": "",
+    "at": "2026-10-23T15:39:46.994Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=single-active-primary&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=default&route_family=mpls_labeled_unicast&route_type=mpls_transport&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=focused&route_path=route-path%3Agenerated%3Asingle-active-primary%3Areverse%3Aprimary-p1",
+    "snapshot": "002.txt"
+  },
+  {
+    "id": 3,
+    "action": "Switch to all-paths at latest",
+    "note": "",
+    "at": "2026-10-23T15:39:48.329Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=single-active-primary&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=default&route_family=mpls_labeled_unicast&route_type=mpls_transport&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all",
+    "snapshot": "003.txt"
+  },
+  {
+    "id": 4,
+    "action": "Use absolute best-effort at +89s",
+    "note": "",
+    "at": "2026-10-23T15:39:49.267Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=single-active-primary&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=default&route_family=mpls_labeled_unicast&route_type=mpls_transport&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759680089000000000",
+    "snapshot": "004.txt"
+  },
+  {
+    "id": 5,
+    "action": "Trace before carrier failure",
+    "note": "",
+    "at": "2026-10-23T15:40:04.215Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=single-active-primary&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=default&route_family=mpls_labeled_unicast&route_type=mpls_transport&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759680089000000000&context_id=tctx1-758855954fcf179c897fa102",
+    "snapshot": "005.txt"
+  },
+  {
+    "id": 6,
+    "action": "Reconstruct +90.049s",
+    "note": "Within clock uncertainty; ambiguity is permitted",
+    "at": "2026-10-23T15:40:05.199Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=single-active-primary&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=default&route_family=mpls_labeled_unicast&route_type=mpls_transport&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759680090049000000",
+    "snapshot": "006.txt"
+  },
+  {
+    "id": 7,
+    "action": "Trace immediately before carrier-down",
+    "note": "",
+    "at": "2026-10-23T15:40:07.872Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=single-active-primary&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=default&route_family=mpls_labeled_unicast&route_type=mpls_transport&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759680090049000000&context_id=tctx1-bb3d0f74c54938d8845cc721",
+    "snapshot": "007.txt"
+  },
+  {
+    "id": 8,
+    "action": "Reconstruct +90.051s",
+    "note": "Within clock uncertainty; ambiguity is permitted",
+    "at": "2026-10-23T15:40:08.842Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=single-active-primary&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=default&route_family=mpls_labeled_unicast&route_type=mpls_transport&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759680090051000000",
+    "snapshot": "008.txt"
+  },
+  {
+    "id": 9,
+    "action": "Trace immediately after carrier-down",
+    "note": "",
+    "at": "2026-10-23T15:40:11.563Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=single-active-primary&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=default&route_family=mpls_labeled_unicast&route_type=mpls_transport&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759680090051000000&context_id=tctx1-f89d434db68aece5a65d1998",
+    "snapshot": "009.txt"
+  },
+  {
+    "id": 10,
+    "action": "Inspect forward direction after return at carrier-down boundary",
+    "note": "",
+    "at": "2026-10-23T15:41:17.422Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=single-active-primary&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=default&route_family=mpls_labeled_unicast&route_type=mpls_transport&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680090051000000&context_id=tctx1-f89d434db68aece5a65d1998",
+    "snapshot": "010.txt"
+  },
+  {
+    "id": 11,
+    "action": "Reconstruct +100s",
+    "note": "",
+    "at": "2026-10-23T15:41:18.328Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=single-active-primary&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=default&route_family=mpls_labeled_unicast&route_type=mpls_transport&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680100000000000",
+    "snapshot": "011.txt"
+  },
+  {
+    "id": 12,
+    "action": "Compare route table validity with selected historical basis",
+    "note": "",
+    "at": "2026-10-23T15:41:29.190Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=single-active-primary&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=default&route_family=mpls_labeled_unicast&route_type=mpls_transport&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680100000000000&context_id=tctx1-b84de8bf7c20340f8f9fb237#route-tables",
+    "snapshot": "012.txt"
+  },
+  {
+    "id": 13,
+    "action": "Trace generic blue VPN at +100s",
+    "note": "Seeded row contains observed_at_ns 1759680600996000000, later than applied +100s; cold trace completed after several seconds",
+    "at": "2026-10-23T15:42:41.393Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=node-a&route_destination=destination%3Anode-b&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680100000000000&context_id=tctx1-b84de8bf7c20340f8f9fb237#route-tables",
+    "snapshot": "013.txt"
+  },
+  {
+    "id": 14,
+    "action": "Switch historical VPN to all paths",
+    "note": "",
+    "at": "2026-10-23T15:42:41.520Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=node-a&route_destination=destination%3Anode-b&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680100000000000&context_id=tctx1-b84de8bf7c20340f8f9fb237#route-tables",
+    "snapshot": "014.txt"
+  },
+  {
+    "id": 15,
+    "action": "Inspect historical VPN service details",
+    "note": "",
+    "at": "2026-10-23T15:43:25.527Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=node-a&route_destination=destination%3Anode-b&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680100000000000&context_id=tctx1-b84de8bf7c20340f8f9fb237#route-tables",
+    "snapshot": "015.txt"
+  },
+  {
+    "id": 16,
+    "action": "Reconstruct +119.999s",
+    "note": "Near boundary; uncertainty expected",
+    "at": "2026-10-23T15:43:25.925Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=node-a&route_destination=destination%3Anode-b&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680119999000000#route-tables",
+    "snapshot": "016.txt"
+  },
+  {
+    "id": 17,
+    "action": "Trace before next-hop change",
+    "note": "",
+    "at": "2026-10-23T15:43:42.355Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=node-a&route_destination=destination%3Anode-b&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680119999000000&context_id=tctx1-d85987e17d82ff4c60a36be9#route-tables",
+    "snapshot": "017.txt"
+  },
+  {
+    "id": 18,
+    "action": "Reconstruct +120.001s",
+    "note": "",
+    "at": "2026-10-23T15:43:42.704Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=node-a&route_destination=destination%3Anode-b&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680120001000000#route-tables",
+    "snapshot": "018.txt"
+  },
+  {
+    "id": 19,
+    "action": "Trace after next-hop change",
+    "note": "Trace settled in 5010ms (includes browser observation)",
+    "at": "2026-10-23T15:43:47.771Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=node-a&route_destination=destination%3Anode-b&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680120001000000&context_id=tctx1-8fb841fdb6520510edcc25dd#route-tables",
+    "snapshot": "019.txt"
+  },
+  {
+    "id": 20,
+    "action": "Reconstruct +179s and target PE-D",
+    "note": "Adjusted away from uncertainty boundary",
+    "at": "2026-10-23T15:44:07.881Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=node-a&route_destination=node-d&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680179000000000#route-tables",
+    "snapshot": "020.txt"
+  },
+  {
+    "id": 21,
+    "action": "Trace before interface deletion",
+    "note": "",
+    "at": "2026-10-23T15:44:13.155Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=node-a&route_destination=node-d&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680179000000000&context_id=tctx1-aea284d0dfbc8b89274dd850#route-tables",
+    "snapshot": "021.txt"
+  },
+  {
+    "id": 22,
+    "action": "Reconstruct +181s after interface deletion",
+    "note": "",
+    "at": "2026-10-23T15:44:13.514Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=node-a&route_destination=node-d&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680181000000000#route-tables",
+    "snapshot": "022.txt"
+  },
+  {
+    "id": 23,
+    "action": "Inspect deleted-node topology and trace",
+    "note": "",
+    "at": "2026-10-23T15:44:18.699Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=node-a&route_destination=node-d&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680181000000000&context_id=tctx1-7eb95ae618e4b60c76ab3748#route-tables",
+    "snapshot": "023.txt"
+  },
+  {
+    "id": 24,
+    "action": "Reconstruct +239s with SRv6 all-active",
+    "note": "",
+    "at": "2026-10-23T15:44:30.053Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=srv6-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=ipv6_unicast&route_type=srv6_policy&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680239000000000#route-tables",
+    "snapshot": "024.txt"
+  },
+  {
+    "id": 25,
+    "action": "Trace before carrier restoration",
+    "note": "",
+    "at": "2026-10-23T15:44:35.595Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=srv6-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=ipv6_unicast&route_type=srv6_policy&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680239000000000&context_id=tctx1-3760e8c8ef087cf4fcbdd5c9#route-tables",
+    "snapshot": "025.txt"
+  },
+  {
+    "id": 26,
+    "action": "Reconstruct +241s after carrier restoration",
+    "note": "",
+    "at": "2026-10-23T15:44:35.974Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=srv6-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=ipv6_unicast&route_type=srv6_policy&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680241000000000#route-tables",
+    "snapshot": "026.txt"
+  },
+  {
+    "id": 27,
+    "action": "Trace after carrier restoration",
+    "note": "",
+    "at": "2026-10-23T15:44:42.001Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=srv6-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=ipv6_unicast&route_type=srv6_policy&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680241000000000&context_id=tctx1-87007b05f4cc18569ef2348c#route-tables",
+    "snapshot": "027.txt"
+  },
+  {
+    "id": 28,
+    "action": "Reconstruct +299s before interface recreation",
+    "note": "",
+    "at": "2026-10-23T15:44:42.397Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=srv6-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=ipv6_unicast&route_type=srv6_policy&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680299000000000#route-tables",
+    "snapshot": "028.txt"
+  },
+  {
+    "id": 29,
+    "action": "Reconstruct +301s after interface recreation",
+    "note": "",
+    "at": "2026-10-23T15:44:44.573Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=srv6-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=ipv6_unicast&route_type=srv6_policy&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680301000000000#route-tables",
+    "snapshot": "029.txt"
+  },
+  {
+    "id": 30,
+    "action": "Trace after interface recreation",
+    "note": "",
+    "at": "2026-10-23T15:44:50.527Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=node-d&route_vrf=default&route_family=ipv4_unicast&route_type=ipv4_unicast&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680301000000000&context_id=tctx1-42109622520be476b1ad3cad#route-tables",
+    "snapshot": "030.txt"
+  },
+  {
+    "id": 31,
+    "action": "EVPN all-active trace at +399s",
+    "note": "",
+    "at": "2026-10-23T15:45:17.660Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680399000000000&context_id=tctx1-8ebdd1d0ac2793fca6cf546b#route-tables",
+    "snapshot": "031.txt"
+  },
+  {
+    "id": 32,
+    "action": "EVPN trace at +401s after attachment failure",
+    "note": "",
+    "at": "2026-10-23T15:45:23.063Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all&time_ns=1759680401000000000&context_id=tctx1-242764d15e910a5f3538e755#route-tables",
+    "snapshot": "032.txt"
+  },
+  {
+    "id": 33,
+    "action": "Inspect EVPN return after attachment down",
+    "note": "",
+    "at": "2026-10-23T15:45:23.199Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759680401000000000&context_id=tctx1-242764d15e910a5f3538e755#route-tables",
+    "snapshot": "033.txt"
+  },
+  {
+    "id": 34,
+    "action": "Switch topology to VPN at historical failure",
+    "note": "",
+    "at": "2026-10-23T15:45:23.313Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=vpn&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759680401000000000&context_id=tctx1-242764d15e910a5f3538e755#route-tables",
+    "snapshot": "034.txt"
+  },
+  {
+    "id": 35,
+    "action": "Reconstruct +559s before EVPN attachment restore",
+    "note": "",
+    "at": "2026-10-23T15:45:34.511Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=vpn&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759680559000000000#route-tables",
+    "snapshot": "035.txt"
+  },
+  {
+    "id": 36,
+    "action": "Reconstruct +561s and trace restored EVPN",
+    "note": "",
+    "at": "2026-10-23T15:45:43.446Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=vpn&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759680561000000000&context_id=tctx1-9ad1933100a8daa67fa6d74f#route-tables",
+    "snapshot": "036.txt"
+  },
+  {
+    "id": 37,
+    "action": "Switch strict clock policy and reconstruct",
+    "note": "",
+    "at": "2026-10-23T15:45:43.777Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=vpn&basis_kind=absolute_time&clock_policy=strict&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759680561000000000#route-tables",
+    "snapshot": "037.txt"
+  },
+  {
+    "id": 38,
+    "action": "Return best-effort and trace",
+    "note": "",
+    "at": "2026-10-23T15:45:50.888Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=vpn&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759680561000000000&context_id=tctx1-9ad1933100a8daa67fa6d74f#route-tables",
+    "snapshot": "038.txt"
+  },
+  {
+    "id": 39,
+    "action": "Reconstruct before capture start",
+    "note": "",
+    "at": "2026-10-23T15:45:51.261Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=vpn&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759679990000000000#route-tables",
+    "snapshot": "039.txt"
+  },
+  {
+    "id": 40,
+    "action": "Trace before capture start",
+    "note": "",
+    "at": "2026-10-23T15:46:20.863Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=vpn&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759679990000000000&context_id=tctx1-6df31f5d6433a7a5f1bceea5#route-tables",
+    "snapshot": "040.txt"
+  },
+  {
+    "id": 41,
+    "action": "Reconstruct after watermark",
+    "note": "",
+    "at": "2026-10-23T15:46:22.794Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=vpn&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759680800000000000&context_id=tctx1-9356d7a2549f25ed9044833b#route-tables",
+    "snapshot": "041.txt"
+  },
+  {
+    "id": 42,
+    "action": "Trace after watermark",
+    "note": "",
+    "at": "2026-10-23T15:46:26.288Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=vpn&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759680800000000000&context_id=tctx1-9356d7a2549f25ed9044833b#route-tables",
+    "snapshot": "042.txt"
+  },
+  {
+    "id": 43,
+    "action": "Invalid absolute timestamp then retain last result",
+    "note": "",
+    "at": "2026-10-23T15:46:26.641Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=vpn&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=not-a-time#route-tables",
+    "snapshot": "043.txt"
+  },
+  {
+    "id": 44,
+    "action": "Recover valid +610s and trace",
+    "note": "",
+    "at": "2026-10-23T15:46:53.760Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=vpn&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759680610000000000&context_id=tctx1-23341e3b622568b35d9498f6#route-tables",
+    "snapshot": "044.txt"
+  },
+  {
+    "id": 45,
+    "action": "Scrub historical slider to start",
+    "note": "",
+    "at": "2026-10-23T15:46:53.846Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=vpn&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759679999996000000#route-tables",
+    "snapshot": "045.txt"
+  },
+  {
+    "id": 46,
+    "action": "Scrub slider to end",
+    "note": "",
+    "at": "2026-10-23T15:46:53.959Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=vpn&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759680719996000000#route-tables",
+    "snapshot": "046.txt"
+  },
+  {
+    "id": 47,
+    "action": "Trace P1→P2 at +100s → +241s → +100s",
+    "note": "Explicit carrier-linked scenario replaces broad repeat",
+    "at": "2026-10-23T15:47:30.829Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=router-to-router&route_start=transit-p-1&route_source=transit-p-1&route_destination=transit-p-2&route_vrf=default&route_family=ipv4_unicast&route_type=isis_underlay&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&time_ns=1759680100000000000&context_id=tctx1-b84de8bf7c20340f8f9fb237#route-tables",
+    "snapshot": "047.txt"
+  },
+  {
+    "id": 48,
+    "action": "Inspect direction after repeated reconstruction",
+    "note": "",
+    "at": "2026-10-23T15:47:31.103Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=absolute_time&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=router-to-router&route_start=transit-p-1&route_source=transit-p-1&route_destination=transit-p-2&route_vrf=default&route_family=ipv4_unicast&route_type=isis_underlay&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=focused&time_ns=1759680100000000000&context_id=tctx1-b84de8bf7c20340f8f9fb237&route_path=route-path%3Ainventory%3Aunderlay-isis-default%3Atransit-p-2%3Atransit-p-1#route-tables",
+    "snapshot": "048.txt"
+  },
+  {
+    "id": 49,
+    "action": "Open P1 historical node from +100s route",
+    "note": "Cross-component validity check; Back follows once loaded",
+    "at": "2026-10-23T15:47:59.397Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=transit-p-1&revision_id=demo%2Ftransit-p-1%2Frevision-0001&plugin_set_id=transit-p-1.generated.v1&context_id=tctx1-b84de8bf7c20340f8f9fb237&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=absolute_time&time_ns=1759680100000000000&member_id=member%3Atransit-p-1&clock_domain=transit-p-1%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Dabsolute_time%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Atransit-p-1%26focus_node%3Dtransit-p-1%26route_scenario%3Drouter-to-router%26route_start%3Dtransit-p-1%26route_source%3Dtransit-p-1%26route_destination%3Dtransit-p-2%26route_vrf%3Ddefault%26route_family%3Dipv4_unicast%26route_type%3Disis_underlay%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26time_ns%3D1759680100000000000%26context_id%3Dtctx1-b84de8bf7c20340f8f9fb237%26route_path%3Droute-path%253Ainventory%253Aunderlay-isis-default%253Atransit-p-2%253Atransit-p-1%23fabric#temporal-topology",
+    "snapshot": "049.txt"
+  },
+  {
+    "id": 50,
+    "action": "Restore latest and primary trace",
+    "note": "P1 local interface was down while direct historical route was complete; saved separate evidence",
+    "at": "2026-10-23T15:49:47.363Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&route_scenario=single-active-primary&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=default&route_family=mpls_labeled_unicast&route_type=mpls_transport&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=focused&relative_seconds=0&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_path=route-path%3Agenerated%3Asingle-active-primary%3Areverse%3Aprimary-p1#route-tables",
+    "snapshot": "050.txt"
+  },
+  {
+    "id": 51,
+    "action": "Open PE-A single-node workspace",
+    "note": "",
+    "at": "2026-10-23T15:49:47.698Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#temporal-topology",
+    "snapshot": "051.txt"
+  },
+  {
+    "id": 52,
+    "action": "Open resource explorer",
+    "note": "",
+    "at": "2026-10-23T15:50:42.215Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#resource-tables",
+    "snapshot": "052.txt"
+  },
+  {
+    "id": 53,
+    "action": "Find DTE000000",
+    "note": "",
+    "at": "2026-10-23T15:50:44.141Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#resource-tables",
+    "snapshot": "053.txt"
+  },
+  {
+    "id": 54,
+    "action": "Select DTE000000 correlation",
+    "note": "",
+    "at": "2026-10-23T15:51:19.989Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#resource-tables",
+    "snapshot": "054.txt"
+  },
+  {
+    "id": 55,
+    "action": "Inspect current DTE→ETG17 relationship",
+    "note": "Adapted: graph relation inspector rather than ungrounded tree expansion",
+    "at": "2026-10-23T15:51:39.198Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "055.txt"
+  },
+  {
+    "id": 56,
+    "action": "Inspect selected resource details",
+    "note": "",
+    "at": "2026-10-23T15:51:39.903Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "056.txt"
+  },
+  {
+    "id": 57,
+    "action": "Set cursor before DTE creation",
+    "note": "",
+    "at": "2026-10-23T15:52:31.780Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "057.txt"
+  },
+  {
+    "id": 58,
+    "action": "Set cursor at DTE creation",
+    "note": "",
+    "at": "2026-10-23T15:53:14.976Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "058.txt"
+  },
+  {
+    "id": 59,
+    "action": "Inspect graph after DTE creation",
+    "note": "",
+    "at": "2026-10-23T15:53:15.723Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "059.txt"
+  },
+  {
+    "id": 60,
+    "action": "Set cursor before multihome",
+    "note": "",
+    "at": "2026-10-23T15:53:26.421Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "060.txt"
+  },
+  {
+    "id": 61,
+    "action": "Set cursor after multihome",
+    "note": "",
+    "at": "2026-10-23T15:53:38.731Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "061.txt"
+  },
+  {
+    "id": 62,
+    "action": "Inspect primary and backup edge identities",
+    "note": "",
+    "at": "2026-10-23T15:54:28.462Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "062.txt"
+  },
+  {
+    "id": 63,
+    "action": "Set cursor before failover",
+    "note": "",
+    "at": "2026-10-23T15:54:38.343Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "063.txt"
+  },
+  {
+    "id": 64,
+    "action": "Set cursor after failover",
+    "note": "",
+    "at": "2026-10-23T15:54:50.608Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "064.txt"
+  },
+  {
+    "id": 65,
+    "action": "Compare graph and tree after failover",
+    "note": "",
+    "at": "2026-10-23T15:54:54.070Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "065.txt"
+  },
+  {
+    "id": 66,
+    "action": "Set cursor before restoration",
+    "note": "",
+    "at": "2026-10-23T15:55:24.667Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "066.txt"
+  },
+  {
+    "id": 67,
+    "action": "Set cursor after restoration",
+    "note": "",
+    "at": "2026-10-23T15:55:40.782Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "067.txt"
+  },
+  {
+    "id": 68,
+    "action": "Compare DTE restoration target with resource state",
+    "note": "DTE returns from IP_ROUTING to ETG0",
+    "at": "2026-10-23T15:55:44.294Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "068.txt"
+  },
+  {
+    "id": 69,
+    "action": "Set cursor before first churn",
+    "note": "Exact-cursor UI sequence and settled table: 14538ms",
+    "at": "2026-10-23T15:55:59.508Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "069.txt"
+  },
+  {
+    "id": 70,
+    "action": "Set cursor after first churn",
+    "note": "Action completed; observation resumed after 60s multi-action tool limit. No per-action timing claim.",
+    "at": "2026-10-23T15:57:09.489Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "070.txt"
+  },
+  {
+    "id": 71,
+    "action": "Verify DTE points ETG000017",
+    "note": "",
+    "at": "2026-10-23T15:57:12.897Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "071.txt"
+  },
+  {
+    "id": 72,
+    "action": "Set cursor after second churn",
+    "note": "Exact-cursor UI workflow 9581ms including observation",
+    "at": "2026-10-23T15:57:22.954Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "072.txt"
+  },
+  {
+    "id": 73,
+    "action": "Verify DTE points IP_ROUTING fallback",
+    "note": "",
+    "at": "2026-10-23T15:57:26.325Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "073.txt"
+  },
+  {
+    "id": 74,
+    "action": "Select failed churn event",
+    "note": "",
+    "at": "2026-10-23T15:59:07.834Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "074.txt"
+  },
+  {
+    "id": 75,
+    "action": "Reveal failed event and compare retained resource state",
+    "note": "",
+    "at": "2026-10-23T15:59:18.819Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "075.txt"
+  },
+  {
+    "id": 76,
+    "action": "Move cursor before failure",
+    "note": "Exact-cursor workflow 11641ms",
+    "at": "2026-10-23T15:59:45.139Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "076.txt"
+  },
+  {
+    "id": 77,
+    "action": "Move cursor after failure",
+    "note": "Exact-cursor workflow 1935ms",
+    "at": "2026-10-23T15:59:47.515Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "077.txt"
+  },
+  {
+    "id": 78,
+    "action": "Verify failed operation preserves next hop",
+    "note": "",
+    "at": "2026-10-23T15:59:51.504Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "078.txt"
+  },
+  {
+    "id": 79,
+    "action": "Select primary ETE resource",
+    "note": "",
+    "at": "2026-10-23T16:00:13.929Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "079.txt"
+  },
+  {
+    "id": 80,
+    "action": "Inspect ETE/ES correlation at failure",
+    "note": "",
+    "at": "2026-10-23T16:00:24.111Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "080.txt"
+  },
+  {
+    "id": 81,
+    "action": "Select backup ETE resource",
+    "note": "",
+    "at": "2026-10-23T16:00:33.810Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "081.txt"
+  },
+  {
+    "id": 82,
+    "action": "Inspect backup relationship at failure",
+    "note": "",
+    "at": "2026-10-23T16:00:37.591Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "082.txt"
+  },
+  {
+    "id": 83,
+    "action": "Include synthetic CTF sources while exact failed-event search remains active",
+    "note": "",
+    "at": "2026-10-23T16:00:55.257Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "083.txt"
+  },
+  {
+    "id": 84,
+    "action": "Reveal event in timeline",
+    "note": "",
+    "at": "2026-10-23T16:01:18.313Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "084.txt"
+  },
+  {
+    "id": 85,
+    "action": "Reveal selected failed event through event-log toolbar",
+    "note": "Adapted from timeline-to-log jump: mark is collapsed at full span; reveal toolbar selected the DTE and event time.",
+    "at": "2026-10-23T16:05:59.653Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "085.txt"
+  },
+  {
+    "id": 86,
+    "action": "Zoom the selected failed-event interval",
+    "note": "Selected +600.74–600.76 s to expose individual event markers.",
+    "at": "2026-10-23T16:06:09.215Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "086.txt"
+  },
+  {
+    "id": 87,
+    "action": "Ctrl-click exact failed timeline event back to log",
+    "note": "Ctrl-click cleared the log search and initially focused the correct event row with navigation-target, aria-selected=false. Later virtualized rows omitted it, so no persistent selection was established.",
+    "at": "2026-10-23T16:06:30.190Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "087.txt"
+  },
+  {
+    "id": 88,
+    "action": "Search and reveal the same failed event again",
+    "note": "Restored exact UID search after Ctrl-click cleared filters; toolbar reveal works. Persistent log navigation focus not established.",
+    "at": "2026-10-23T16:07:01.596Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "088.txt"
+  },
+  {
+    "id": 89,
+    "action": "Switch single-node topology to control-plane perspective",
+    "note": "Automatic reconstruction settled; same +600.750 s cursor. Cross-layer unknown states explicitly labelled.",
+    "at": "2026-10-23T16:07:21.040Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "089.txt"
+  },
+  {
+    "id": 90,
+    "action": "Restore data-bridge topology perspective",
+    "note": "Correlation focus remains DTE0.",
+    "at": "2026-10-23T16:07:23.889Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "090.txt"
+  },
+  {
+    "id": 91,
+    "action": "Expand DTE0 relationship lane at full span",
+    "note": "Retains full-viewport historical links while selected-time graph remains current.",
+    "at": "2026-10-23T16:07:42.384Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "091.txt"
+  },
+  {
+    "id": 92,
+    "action": "Search DTE0 while preserving failed-event cursor",
+    "note": "Selected moment +600.750 s and IP_ROUTING correlation preserved.",
+    "at": "2026-10-23T16:07:43.066Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "092.txt"
+  },
+  {
+    "id": 93,
+    "action": "Clear resource search before cursor performance control",
+    "note": "No product data changed; removes active resource-query string.",
+    "at": "2026-10-23T16:07:43.663Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "093.txt"
+  },
+  {
+    "id": 94,
+    "action": "Select a fresh churn timestamp with empty resource search",
+    "note": "+600.800 s; complete cursor workflow 3420 ms. Adapted node-switch move: PE-A/P1 round trip was covered at49–51.",
+    "at": "2026-10-23T16:08:01.761Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "094.txt"
+  },
+  {
+    "id": 95,
+    "action": "Select a range spanning failover and restore without changing the cursor",
+    "note": "Correlation remains the instant +600.800 s; historical range should not be unioned into its graph.",
+    "at": "2026-10-23T16:08:11.999Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "095.txt"
+  },
+  {
+    "id": 96,
+    "action": "Inspect exact next-hop correlation after range change",
+    "note": "Popup declares DTE0 to IP_ROUTING, consistent with selected instant.",
+    "at": "2026-10-23T16:08:16.951Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "096.txt"
+  },
+  {
+    "id": 97,
+    "action": "Repeat precreation → creation → precreation at exact nanosecond boundary",
+    "note": "Settled graph snapshots saved in creation-boundary-repeat.json.",
+    "at": "2026-10-23T16:08:38.017Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "097.txt"
+  },
+  {
+    "id": 98,
+    "action": "Inspect absent precreation focus after round trip",
+    "note": "Graph and index both explicitly report no active correlation; settles the earlier pending move57.",
+    "at": "2026-10-23T16:08:53.949Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "098.txt"
+  },
+  {
+    "id": 99,
+    "action": "Reload historical single-node workspace",
+    "note": "Reload restored URL member context at latest resolved time and cleared ephemeral range/cursor/focus consistently.",
+    "at": "2026-10-23T16:09:16.628Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "099.txt"
+  },
+  {
+    "id": 100,
+    "action": "Reopen DTE0 at exact failover time after reload",
+    "note": "Selected +360.0375 s: graph and table reconstruct next_hop to IP_ROUTING; no stale latest ETG17 relation.",
+    "at": "2026-10-23T16:10:08.570Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26route_scenario%3Dsingle-active-primary%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Ddefault%26route_family%3Dmpls_labeled_unicast%26route_type%3Dmpls_transport%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dreverse%26route_view%3Dfocused%26relative_seconds%3D0%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_path%3Droute-path%253Agenerated%253Asingle-active-primary%253Areverse%253Aprimary-p1%23fabric#dependency-graph",
+    "snapshot": "100.txt"
+  }
+]

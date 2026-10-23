@@ -29,6 +29,12 @@ group from the repository root with
 `python scripts/check_plugin_conformance.py --group foundation`, or use
 `--group combined` for the demo's durable and cross-node integrations.
 
+The generated topology adapter reconstructs claim status from the selected
+interface/attachment history, including carrier loss and restoration. Route
+inventory and direct traces use the same evidence-validity gate. Run the
+[historical route checks](../docs/plugin-api-validation.md#historical-route-and-correlation-checks)
+to exercise those boundaries; the minimal parser teaching slice remains small.
+
 Retained-source jumps use core-assigned exact record identity, not a search for
 that ID in arbitrary text. The teaching parser remains unchanged. Run
 `python -m unittest tests.test_source_record_core tests.test_range_summary_bounds -v`

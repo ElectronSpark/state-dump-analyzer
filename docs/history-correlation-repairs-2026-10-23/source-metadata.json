@@ -1,0 +1,26 @@
+{
+  "head": "f8f5de77a5124a12317f9e71d23b4a5f7562df25",
+  "branch": "codex/comprehensive-router-dump-demo",
+  "source_sha256": {
+    "src/router_dump_analyzer/multi_node_route.py": "0d419b5f30be2cf6ab99507725fa2c7a44e06efa296b7dc37a9f66a811064aba",
+    "src/router_dump_analyzer/multi_node_route.pyi": "f3482e13b3c0549cfbbd111349726b5cc5393c99eedda9d073032af2eb1d9712",
+    "src/router_dump_analyzer/normalized_data.py": "b07b5ae2c7ab41834d5f931ce618b2296017f73256113d0bb0e15aef027d93aa",
+    "demo/rsl_demo_plugin/typed_topology.py": "8c0b07f4914e1eea4ec1e2d02614cb42e19f3bed621468bc799b6a4a6a8d4a58",
+    "demo/rsl_demo_plugin/typed_topology.pyi": "ea6cdcd163f5f6497ff4a4a1770e3f1828b474d657031e2dadf44676b258d1eb",
+    "frontend/assets/app.js": "1f884ccbfef80fd6f1f5ff35f660a2eb21325b107a92290a3e1d371f7dd801d4",
+    "frontend/assets/topology.js": "364cfcc451c468a14e6f3a74147e8291870660426d10ae86f652d97a76699f6a",
+    "frontend/tests/correlation_list_recovery.test.mjs": "1e8c4d220b79ed3ca50b0d34743c3c4ea2c6d500afd18d261e6a5306007df233",
+    "tests/test_route_history_validity.py": "2aeac03fa874fde3c54e7dccde869be6839d8f09601d0f033a68cb3fa11b996a",
+    "tests/test_resource_cursor_search.py": "d312babb487c727d5938bde12d03bf92384efba6f84b90413cfab2a5ab8a23e7",
+    "tests/test_generated_assembly_api_integration.py": "b3289b500234fcac536d57644815b0bd594cde74986629a2dd6daf067aefb238",
+    ".agents/skills/router-plugin-validate/SKILL.md": "8a0b849d0e8be4a895843c3d8b7089edbbaa3f03d7ce8ed73c2e1506bfcbdd9b",
+    "docs/plugin-api-validation.md": "205f858eab1330ee5eeac52145d70c5729a0f07ec398df087a642925e2deb56f",
+    "docs/plugin-contract.md": "a4e415c85304bf966cc689dac7f2349ca5cbdfc931d48cafe0b52fa5eade1cc7",
+    "docs/api-contract.md": "4ecdcebabbf8f95831a93e04f37a24306fb54f5b2cf642d16250dc6673ce347d",
+    "docs/plugin-author-quickstart.md": "39b24550141caf147f296e85c2adab4b9498bed7c8ac269cf25df1fad3cf4fcd",
+    "docs/plugin-author-guide.md": "59ac2f44d9d60c64abdc6cb8a4d521cac517ef7861d5e8a7a1e29f1aa10e9a1f",
+    "README.md": "86f739e0faeed9301cfec59a8eb619e0911bbbe6950a1380f3692afbdf5e08ef",
+    "demo/README.md": "94f237de8df922c9b876974e431ff6767f2d60c28a5b85a58f591ad314bf1a58"
+  },
+  "scope": "Includes pre-existing uncommitted VPN popup repairs; no commit or push performed."
+}

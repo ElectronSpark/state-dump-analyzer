@@ -19,6 +19,7 @@ from itertools import pairwise
 from typing import Any
 
 from router_dump_analyzer.load_progress import AnalysisLoadStage, _analysis_load_stage
+from router_dump_analyzer.normalized_data import contains_time
 from router_dump_analyzer.plugin_api import (
     Evidence,
     ForwardingCandidateConstraint,
@@ -48,13 +49,13 @@ from router_dump_analyzer.route_trace_core import (
     evaluate_forwarding_policy,
     evaluate_forwarding_traversal,
 )
+from router_dump_analyzer.temporal_core import temporal_integer
 from router_dump_analyzer.topology_core import (
     resolve_connectivity_domain_reference,
 )
 from router_dump_analyzer.value_core import mutable_json_value, parse_decimal_integer
 
 from .cancellation import query_cancellation_checkpoint, query_checked
-
 from .canonical import CanonicalValueError, packet_value_json
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
 
@@ -1122,7 +1123,16 @@ class MultiNodeRouteService:
                     "does not reference its matching generated route decision"
                 )
             forwarding_rows.append(
-                self._public_generated_projection_row(row)
+                {
+                    **self._public_generated_projection_row(row),
+                    "route_validity": {
+                        "node_id": linked_routes[0]["node_id"],
+                        "valid_from_ns": linked_routes[0].get(
+                            "valid_from_ns", linked_routes[0].get("observed_at_ns"),
+                        ),
+                        "valid_to_ns": linked_routes[0].get("valid_to_ns"),
+                    },
+                }
             )
 
         declared_packet_profile = coverage.get("packet_profile_id")
@@ -1522,6 +1532,10 @@ class MultiNodeRouteService:
             str(node["node_id"]): str(node["member_id"])
             for node in query_checked(route_evidence["nodes"])
         }
+        times_by_node = {
+            str(node["node_id"]): node.get("resolved_time") or {}
+            for node in route_evidence["nodes"]
+        }
         for path in query_checked(paths):
             candidate_id = str(path.get("generated_candidate_id") or "")
             if not candidate_id:
@@ -1624,6 +1638,22 @@ class MultiNodeRouteService:
                         decision.get("disposition", "unresolved"),
                     )
                 )
+                route_row = directional_decision.get(
+                    "route_validity", decision.get("route_validity"),
+                )
+                evidence_valid = (
+                    self._route_evidence_valid_at(
+                        directional_decision
+                        if "observed_at_ns" in directional_decision else decision,
+                        times_by_node.get(node_id, {}),
+                    )
+                    and route_row is not None
+                    and self._route_evidence_valid_at(
+                        route_row, times_by_node.get(str(route_row["node_id"]), {}),
+                    )
+                )
+                if not evidence_valid:
+                    disposition = "unresolved"
                 complete = matches and disposition != "unresolved"
                 segment["resource_refs"] = resource_refs
                 segment["node_id"] = node_id
@@ -1646,12 +1676,14 @@ class MultiNodeRouteService:
                     or decision.get("resolution_text")
                     or "The generated node plug-in did not declare this route step."
                 )
+                if not evidence_valid:
+                    text = "Route or forwarding evidence is unavailable at the selected time."
                 segment["route_resolution_text"] = text
                 segment["route_resolution"].update(
                     {
                         "text": text,
-                        "text_source": "plugin_provided",
-                        "provided_by": provider,
+                        "text_source": "plugin_provided" if evidence_valid else "core",
+                        "provided_by": provider if evidence_valid else {"ownership": "core"},
                         "interaction_target_ids": resource_target_ids,
                         "highlight_target_ids": [node_target_id],
                     }
@@ -1688,6 +1720,8 @@ class MultiNodeRouteService:
                     or decision.get("reason_code")
                     or "plugin_reason_not_declared"
                 )
+                if not evidence_valid:
+                    plugin_reason_code = "route_evidence_outside_validity"
                 existing_state["reason_code"] = plugin_reason_code
                 segment["generated_forwarding_state"] = {
                     "state": decision_state,
@@ -1750,6 +1784,11 @@ class MultiNodeRouteService:
                     }
                     explicitly_terminal = True
                     explicitly_unusable = True
+                elif not evidence_valid:
+                    segment["segment_kind"] = "unresolved"
+                    existing_state.pop("terminal", None)
+                    existing_state.pop("terminal_disposition", None)
+                    existing_state["operational"] = "unknown"
                 elif disposition == "best_effort_inferred":
                     segment["completeness"] = {
                         "state": "best_effort_inferred",
@@ -3590,6 +3629,16 @@ class MultiNodeRouteService:
                         "resolution text"
                     )
                 decision = {
+                    "route_validity": {
+                        "node_id": source_row["node_id"],
+                        "valid_from_ns": source_row.get(
+                            "valid_from_ns", source_row.get("observed_at_ns"),
+                        ),
+                        "valid_to_ns": source_row.get("valid_to_ns"),
+                    },
+                    "observed_at_ns": row.get("observed_at_ns"),
+                    "valid_from_ns": row.get("valid_from_ns", row.get("observed_at_ns")),
+                    "valid_to_ns": row.get("valid_to_ns"),
                     "candidate_id": candidate_id,
                     "visit_index": visit_index,
                     "next_node_id": next_node_id,
@@ -3929,6 +3978,42 @@ class MultiNodeRouteService:
         """Return only rows emitted by the generated node projections."""
 
         return self._generated_route_table_entries()
+
+    @staticmethod
+    def _route_evidence_valid_at(
+        row: Mapping[str, Any], resolved_time: Mapping[str, Any],
+    ) -> bool:
+        """Require native-clock evidence throughout the mapped query window."""
+
+        local_time = resolved_time.get("local_time_ns")
+        if local_time is None:
+            return False
+        try:
+            center = temporal_integer(local_time, "route local time")
+            uncertainty = temporal_integer(
+                resolved_time.get("uncertainty_ns") or "0", "route clock uncertainty",
+            )
+            minimum, maximum = center - uncertainty, center + uncertainty
+            query_time = resolved_time.get("query_time_ns")
+            if query_time is not None:
+                query_ns = temporal_integer(query_time, "route query time")
+                if resolved_time.get("absolute_min_ns") is not None:
+                    minimum = center + temporal_integer(
+                        resolved_time["absolute_min_ns"], "route absolute minimum",
+                    ) - query_ns
+                if resolved_time.get("absolute_max_ns") is not None:
+                    maximum = center + temporal_integer(
+                        resolved_time["absolute_max_ns"], "route absolute maximum",
+                    ) - query_ns
+            start = row.get("valid_from_ns", row.get("observed_at_ns"))
+            end = row.get("valid_to_ns")
+            start_ns = None if start is None else temporal_integer(start, "route valid_from_ns")
+            end_ns = None if end is None else temporal_integer(end, "route valid_to_ns")
+        except ValueError as error:
+            raise MultiNodeRouteRequestError(str(error)) from error
+        return contains_time(minimum, start_ns, end_ns) and contains_time(
+            maximum, start_ns, end_ns,
+        )
 
     @staticmethod
     def _declared_boolean(
@@ -4336,7 +4421,7 @@ class MultiNodeRouteService:
             "plugin_provenance": provider,
             "attributes": dict(row),
             "plugin_details": dict(row),
-            "valid_from_ns": str(row.get("observed_at_ns")),
+            "valid_from_ns": row.get("valid_from_ns", row.get("observed_at_ns")),
             "valid_to_ns": row.get("valid_to_ns"),
         }
 
@@ -5190,6 +5275,8 @@ class MultiNodeRouteService:
                 continue
             node = nodes_by_id[row["node_id"]]
             resolved_time = node.get("resolved_time") or {}
+            if not self._route_evidence_valid_at(row, resolved_time):
+                continue
             basis_time_ns = resolved_time.get("query_time_ns")
             if basis_time_ns is not None:
                 timestamp_ns = int(basis_time_ns)
@@ -6385,6 +6472,10 @@ class MultiNodeRouteService:
             referenced_row,
             targets,
             scenario_id=scenario_id,
+            resolved_times={
+                str(node["node_id"]): node.get("resolved_time") or {}
+                for node in route_evidence["nodes"]
+            },
         )
         self._materialize_generated_findings(
             paths,
@@ -7830,8 +7921,12 @@ class MultiNodeRouteService:
         targets: dict[str, dict[str, Any]],
         *,
         scenario_id: str,
+        resolved_times: Mapping[str, Mapping[str, Any]],
     ) -> list[dict[str, Any]]:
-        entries = self._route_table_entries()
+        entries = [
+            row for row in self._route_table_entries()
+            if self._route_evidence_valid_at(row, resolved_times.get(row["node_id"], {}))
+        ]
         all_refs: dict[str, dict[str, Any]] = {}
         for path in paths:
             sequence = list(path.get("node_sequence") or [])
@@ -7885,6 +7980,9 @@ class MultiNodeRouteService:
                 if (
                     node_id == sequence[0]
                     and referenced_row is not None
+                    and self._route_evidence_valid_at(
+                        referenced_row, resolved_times.get(referenced_row["node_id"], {}),
+                    )
                     and (
                         referenced_row["path_id"] == path.get("path_id")
                         or any(

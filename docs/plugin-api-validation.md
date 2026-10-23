@@ -134,6 +134,12 @@ views, limits and time basis. Profile clock-uncertainty probes and relationship
 history traversal before adding caches: a bounded result page need not bound
 intermediate work. Test disconnect propagation separately; an aborted browser
 fetch or progress-poll count does not attribute server CPU or prove cancellation.
+Keep resource-search text and selected kind explicit in cursor benchmarks. Compare
+matched fresh timestamps with search empty and active, plus same-time cache hits;
+separate first lazy-history materialization from later reconstruction. Preserve
+ordered rows, total/counts-by-kind, provider metadata and disclosure when reducing
+projection work. Kind filtering cannot move ahead of search if it changes the
+cross-kind counts, and reuse must not skip the final safe search-text projection.
 
 When optimizing relationship sampling, preserve the original ordered probe set
 and final wire output, including same-identity history precedence. The indexed
@@ -539,6 +545,11 @@ after the anchor leaves view, then scroll back: an old pinned card must not
 intercept that click or revive. Verify pointer and native Enter/Space activation
 after reveal; clipping must not strand a valid newly focused target. Avoid using
 timeline bounds for an anchor in a different component.
+Include the single-node correlation card: its graph, relationship-index and
+resource-table anchors have different clipping boundaries. A captured page scroll
+must retire an off-screen pin before it covers Timeline Actions; scrolling inside
+the card must preserve its content. Test partial visibility behind the sticky
+header and passive re-entry as controls.
 
 Also change layout without scrolling: remove a preceding lane, disable the
 popup's own preset, or collapse a containing resource tree. Reconcile the live
@@ -654,6 +665,40 @@ Keep path-scoped service context visually separate from forwarding nodes:
 a service carried over a path does not establish that every transit node
 participates in that service. Correlation anchors and path endpoints are not
 membership evidence. Check context details and path emphasis in both graph modes.
+Keep service-context rendering tied to route changes, not graph geometry updates.
+Open its details immediately after switching Focused/All paths and after layout
+transitions settle; the live trigger and keyboard focus must survive resize-only
+redraws. Scroll a pinned service trigger outside the viewport and behind the
+sticky header, with a partially visible trigger as a control. Scrolling inside
+the popup must preserve it. After reading lower facts, focus another control
+and return the pointer to the same service label: passive re-entry must retain
+popup scroll and external focus. Direction, path, and trace replacement must
+still clear obsolete service details, including reused presentation group IDs.
+
+### Historical route and correlation checks
+
+For historical routes, compare the applied frozen member basis with each route
+row and forwarding decision's validity, including the full clock uncertainty
+interval. Exercise direct traces and table-seeded traces before, within and after
+validity; a filtered table alone does not close a trace bypass. Cross-check a
+typed point-to-point circuit against its local interface at down and restored
+times, then repeat past-present-past. Assert that the traced segment actually
+crosses the changed circuit; parallel routes involving both nodes are insufficient.
+Single-node native cursor offsets and fabric UTC times can have different origins.
+Use exact timestamps and failed/stale events as controls. Graph and resource-table
+refreshes settle independently, so save both settled results before comparing them.
+
+The generated adapter and core boundary are exercised by:
+
+```text
+python -m unittest tests.test_route_history_validity tests.test_generated_assembly_api_integration -v
+```
+
+These are conformance checks for the existing generated example, not new parser
+hooks. Use the same saved fixture in browser follow-up and compare the link with
+its local single-node status.
+
+### Request recovery
 
 Read failures must settle local pending-operation state without replaying a
 mutation or letting an old request overwrite a newer generation. Verify that a

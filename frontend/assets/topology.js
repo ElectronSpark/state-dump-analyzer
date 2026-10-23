@@ -5237,6 +5237,10 @@ function renderRouteTrace() {
   renderDirectionTabs();
   renderRouteSeed();
   updateRouteViewChrome();
+  // Service controls follow route state, not geometry-only graph redraws.
+  renderRoutePresentations(state.routeGraphMode === "focused"
+    ? [selectedRoutePath()].filter(Boolean)
+    : state.routeTrace?.paths || []);
   renderRouteOutcome(state.routeTrace);
   renderRoutePacketEvolution(null);
   const empty = byId("mn-route-empty");
@@ -8411,10 +8415,16 @@ function showRoutePresentationPreview(groupId, anchor, pinned = false, point = n
   if (state.previewRoutePathId) clearRoutePathPreview();
   clearTimeout(state.routePreviewHideTimer);
   const preservePin = state.previewRoutePresentationId === groupId && state.routePresentationPinned;
-  state.previewRoutePresentationId = groupId;
-  state.routePresentationPinned = Boolean(pinned || preservePin);
-  state.routePresentationTrigger = anchor;
   const card = byId("mn-route-hover-card");
+  if (preservePin) {
+    state.routePresentationTrigger = anchor;
+    positionRoutePathPreview(anchor);
+    if (pinned && !card.hidden) card.querySelector("[data-route-presentation-close]")?.focus({ preventScroll: true });
+    return;
+  }
+  state.previewRoutePresentationId = groupId;
+  state.routePresentationPinned = pinned;
+  state.routePresentationTrigger = anchor;
   if (card.parentElement !== document.body) document.body.append(card);
   card.hidden = false;
   card.classList.add("is-floating");
@@ -8434,7 +8444,7 @@ function showRoutePresentationPreview(groupId, anchor, pinned = false, point = n
   const close = card.querySelector("[data-route-presentation-close]");
   close?.addEventListener("click", () => clearRoutePresentationPreview({ restoreFocus: true }));
   positionRoutePathPreview(anchor, state.routePresentationPinned ? null : point);
-  if (state.routePresentationPinned) close?.focus({ preventScroll: true });
+  if (pinned && !card.hidden) close?.focus({ preventScroll: true });
 }
 
 function scheduleHideRoutePresentationPreview(delay = 220) {
@@ -8525,15 +8535,25 @@ function positionRoutePathPreview(anchor, point = null) {
   const card = byId("mn-route-hover-card");
   if (!card || card.hidden || !anchor?.getBoundingClientRect) return;
   const rect = anchor.getBoundingClientRect();
+  const headerBottom = state.previewRoutePresentationId
+    ? Math.max(0, document.querySelector(".topbar")?.getBoundingClientRect().bottom || 0) : 0;
+  if (state.previewRoutePresentationId && (!anchor.isConnected
+      || rect.right <= 0 || rect.left >= window.innerWidth
+      || rect.bottom <= headerBottom || rect.top >= window.innerHeight)) {
+    clearRoutePresentationPreview();
+    return;
+  }
   const width = Math.min(430, window.innerWidth - 24);
-  const cardHeight = Math.min(card.scrollHeight || 330, window.innerHeight - 24);
+  const maxHeight = Math.min(330, window.innerHeight - headerBottom - 24);
+  card.style.maxHeight = `${maxHeight}px`;
+  const cardHeight = Math.min(card.scrollHeight || 330, maxHeight);
   const anchorLeft = Number.isFinite(point?.clientX) ? point.clientX : rect.left;
   const anchorRight = Number.isFinite(point?.clientX) ? point.clientX : rect.right;
   const anchorTop = Number.isFinite(point?.clientY) ? point.clientY : rect.top;
   let left = anchorRight + 14;
   if (left + width > window.innerWidth - 12) left = anchorLeft - width - 14;
   left = Math.max(12, Math.min(window.innerWidth - width - 12, left));
-  const top = Math.max(12, Math.min(window.innerHeight - cardHeight - 12, anchorTop - 18));
+  const top = Math.max(headerBottom + 12, Math.min(window.innerHeight - cardHeight - 12, anchorTop - 18));
   card.style.width = `${width}px`;
   card.style.left = `${left}px`;
   card.style.top = `${top}px`;
@@ -8715,7 +8735,6 @@ function renderAllPathEdges(paths, nodes, positions, dimensions, nodeBoxes) {
 
 function renderAllPathsRouteMap() {
   const paths = state.routeTrace?.paths || [];
-  renderRoutePresentations(paths);
   const layer = byId("mn-route-node-layer");
   const empty = byId("mn-route-map-empty");
   const nodes = allPathGraphNodes(paths, selectedResultNodes());
@@ -8808,7 +8827,6 @@ function renderFocusedRouteMap() {
     return;
   }
   const routePath = selectedRoutePath();
-  renderRoutePresentations([routePath].filter(Boolean));
   const pathDirectionalDifference = routePathMatchesDirectionalDifference(routePath, directionalDifference)
     ? directionalDifference
     : null;
@@ -10246,6 +10264,7 @@ function bindControls() {
           renderFocusedRouteMap();
           renderDirectionTabs();
         }
+        if (state.routePresentationTrigger) positionRoutePathPreview(state.routePresentationTrigger);
       });
     });
     resizeObserver.observe(byId("mn-map-stage"));
@@ -10255,6 +10274,9 @@ function bindControls() {
     const card = byId("mn-topology-hover-card");
     if (state.topologyInspectorTrigger && !card?.contains(event.target)) {
       scheduleTopologyInspectorPosition(state.topologyInspectorTrigger);
+    }
+    if (state.routePresentationTrigger && !byId("mn-route-hover-card")?.contains(event.target)) {
+      positionRoutePathPreview(state.routePresentationTrigger);
     }
   }, { capture: true, passive: true });
 }

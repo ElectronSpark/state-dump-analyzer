@@ -869,13 +869,15 @@ class NormalizedDataServiceTests(unittest.TestCase):
             descriptor["properties"].append({"name": "private", "client_visible": False})
             dataset["resources"][0]["key"] = {"private": "unique-hidden-token", "ifindex": "public-index"}
             service = static_data_service(dataset)
-            view = service.resource_state_at("node-x/INTERFACE/1", 10)
             if indexed:
                 dataset["_scale_runtime"] = SimpleNamespace(
                     resources=dataset["resources"],
+                    resource_by_id={item["resource_id"]: item for item in dataset["resources"]},
+                    lifecycle_by_resource={"node-x/INTERFACE/1": dataset["lifecycle_intervals"]},
+                    state_by_resource={"node-x/INTERFACE/1": dataset["state_intervals"]},
                     resource_search=SimpleNamespace(get_or_build=lambda _time, build: build()),
                 )
-            with self.subTest(indexed=indexed), patch.object(service, "resource_state_at", return_value=view):
+            with self.subTest(indexed=indexed):
                 self.assertEqual(service.resources_at(10, search="unique-hidden-token")["items"], [])
                 self.assertEqual(len(service.resources_at(10, search="public-index")["items"]), 1)
 

@@ -10,6 +10,7 @@ selection and joining.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from types import MappingProxyType
 from typing import Any
 
@@ -20,6 +21,7 @@ from router_dump_analyzer.capability_router import (
     RevisionSetCapabilityRouter,
 )
 from router_dump_analyzer.ingestion_pipeline import PluginRegistry
+from router_dump_analyzer.multi_node_topology import _status_window_at
 from router_dump_analyzer.plugin_api import (
     CORE_PLUGIN_API_VERSION,
     AnalyzerPluginBase,
@@ -58,11 +60,13 @@ from router_dump_analyzer.topology_federation import (
 )
 from router_dump_analyzer.value_core import parse_canonical_decimal_integer
 
-from .assembly_store import DemoAssemblyStore
 from ._identity import (
     PLUGIN_ID as DEMO_TOPOLOGY_PLUGIN_ID,
+)
+from ._identity import (
     PLUGIN_VERSION as DEMO_TOPOLOGY_PLUGIN_VERSION,
 )
+from .assembly_store import DemoAssemblyStore
 
 DEMO_CONNECTOR_CLAIM_CONTRACT_ID = "demo.topology.connector.v1"
 DEMO_CONNECTOR_POLICY_ID = "demo.topology.connector.exact.v1"
@@ -191,6 +195,8 @@ class DemoTopologyProjectionPlugin(AnalyzerPluginBase):
             kinds=frozenset({DEMO_TOPOLOGY_CLAIM_KIND}),
             limit=request.max_world_reads,
         ):
+            if state.exists is False:
+                continue
             raw_claim = dict(state.properties)
             if (
                 raw_claim.get("render_hint") != "direct_line"
@@ -218,10 +224,7 @@ class DemoTopologyProjectionPlugin(AnalyzerPluginBase):
                 if raw_status in {"down", "failed", "withdrawn", "unusable"}
                 else TopologyUsability.UNKNOWN
             )
-            raw_confidence = str(raw_claim.get("confidence") or "best_effort")
             quality = state.quality
-            if raw_confidence in {"exact", "plugin_declared"}:
-                quality = Quality.EXACT
             outputs.append(
                 TopologyProjectionRecord(
                     projection_id=DEMO_TOPOLOGY_PROJECTION_ID,
@@ -234,7 +237,7 @@ class DemoTopologyProjectionPlugin(AnalyzerPluginBase):
                     source_resources=(endpoint,),
                     provenance=state.provenance,
                     quality=quality,
-                    exists=True,
+                    exists=state.exists,
                     properties={
                         "label": str(
                             raw_claim.get("interface_name") or raw_resource_id
@@ -285,6 +288,7 @@ class _DemoTopologyProjectionStateProvider:
             str,
             Mapping[ResourceKey, ResourceStateView],
         ],
+        resources_by_instance: Mapping[str, Mapping[str, Mapping[str, Any]]],
     ) -> None:
         self._states_by_instance = MappingProxyType(
             {
@@ -292,6 +296,7 @@ class _DemoTopologyProjectionStateProvider:
                 for instance_id, states in states_by_instance.items()
             }
         )
+        self._resources_by_instance = resources_by_instance
 
     def __call__(
         self,
@@ -299,11 +304,34 @@ class _DemoTopologyProjectionStateProvider:
         perspective_id: str,
         resolved_time: Mapping[str, Any],
     ) -> Mapping[ResourceKey, ResourceStateView]:
-        del perspective_id, resolved_time
-        return self._states_by_instance.get(
+        del perspective_id
+        states = self._states_by_instance.get(
             provider.pin.instance_id,
             _EMPTY_TOPOLOGY_STATES,
         )
+        resources = self._resources_by_instance.get(provider.pin.instance_id, {})
+        center_value = resolved_time.get("query_time_ns")
+        center = int(
+            resolved_time["local_time_ns"] if center_value is None else center_value
+        )
+        minimum_value = resolved_time.get("absolute_min_ns")
+        maximum_value = resolved_time.get("absolute_max_ns")
+        minimum = center if minimum_value is None else int(minimum_value)
+        maximum = center if maximum_value is None else int(maximum_value)
+        result = {}
+        for key, state in states.items():
+            resource = resources[state.properties["interface_resource_id"]]
+            temporal = _status_window_at(
+                resource, center_ns=center, minimum_ns=minimum,
+                maximum_ns=maximum,
+            )
+            result[key] = replace(
+                state,
+                exists=temporal["exists"],
+                properties={**state.properties, "status": temporal["status"]},
+                quality=Quality(temporal["quality"]),
+            )
+        return result
 
 
 def _claim_state(node_id: str, raw_claim: Mapping[str, Any]) -> ResourceStateView:
@@ -458,6 +486,7 @@ def build_demo_topology_projection_state_provider(
     """Snapshot node-local generated observations for reconstructed worlds."""
 
     states_by_instance: dict[str, dict[ResourceKey, ResourceStateView]] = {}
+    resources_by_instance: dict[str, dict[str, Mapping[str, Any]]] = {}
     for node in contract["nodes"]:
         plugin_set = next(
             value
@@ -470,6 +499,10 @@ def build_demo_topology_projection_state_provider(
         if type(raw_claims) is not list:
             raise ValueError("demo topology claims must be an exact array")
         states: dict[ResourceKey, ResourceStateView] = {}
+        raw_resources = {
+            row["resource_id"]: row for row in topology.get("resources", [])
+        }
+        resources: dict[str, Mapping[str, Any]] = {}
         for raw_claim in raw_claims:
             if type(raw_claim) is not dict:
                 raise ValueError("demo topology claim must be an exact object")
@@ -485,8 +518,19 @@ def build_demo_topology_projection_state_provider(
             if state.resource in states:
                 raise ValueError("demo topology claim identity must be unique")
             states[state.resource] = state
+            resource_id = raw_claim["interface_resource_id"]
+            raw_resource = raw_resources.get(resource_id, raw_claim)
+            resources[resource_id] = {
+                "initial_status": raw_resource.get("status", "unknown"),
+                "valid_from_ns": raw_resource.get("valid_from_ns"),
+                "valid_to_ns": raw_resource.get("valid_to_ns"),
+                "changes": raw_resource.get("changes", []),
+            }
         states_by_instance[plugin_metadata["plugin_instance_id"]] = states
-    return _DemoTopologyProjectionStateProvider(states_by_instance)
+        resources_by_instance[plugin_metadata["plugin_instance_id"]] = resources
+    return _DemoTopologyProjectionStateProvider(
+        states_by_instance, resources_by_instance,
+    )
 
 
 __all__ = [

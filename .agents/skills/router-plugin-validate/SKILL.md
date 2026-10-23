@@ -161,6 +161,8 @@ For frontend state repairs, follow the map's
 [state and recovery checks](../../../docs/plugin-api-validation.md#frontend-state-and-recovery).
 Wait for asynchronous refreshes before judging retained choices, and exercise
 the next successful action after a failed operation through the actual UI.
+Also activate controls during layout transitions, then check the settled result:
+resize-only redraws must preserve valid popup anchors and keyboard focus.
 Include duplicate tree instances, uncached keyboard targets, and invalid input
 while an older read is pending. Verify selected presets, focus, popup anchors,
 and dependent guidance after the settled render. Use production-normalized
@@ -189,7 +191,11 @@ then click a surrounding control. Compare a partially visible anchor and verify
 that scrolling back does not revive a dismissed card. Include log-row anchors
 and Fabric graph transforms, not just timeline markers. Distinguish passive
 pin restoration from activation: redraw must not steal focus from a field being
-typed into. Verify native keyboard activation after scrolling too.
+typed into. Passive re-entry must preserve a pinned card's scroll and focus.
+Apply these checks to single-node correlation cards and route service-context
+strips as well as graph inspectors;
+direction or trace changes must still retire obsolete context.
+Verify native keyboard activation after scrolling too.
 Start Enter/Space from timeline targets above and below the viewport, including
 an upward source-marker reveal and horizontal label occlusion. Check the settled
 card; use visible and partially visible pointer targets and virtual-log focus
@@ -207,6 +213,13 @@ Compare
 exact counts with paged detail, and retained-result labels with the applied
 request after invalid input. After actual browser Back, compare restored field
 values with settled rows; consistent reset and retained filtering are both valid.
+For historical route checks, compare row/decision validity and the actual traversed
+link with the applied per-node time and clock bounds. Test direct tracing as well
+as table-seeded tracing; hiding an invalid table row must not leave a trace bypass.
+Compare typed-link status with its local resource history through down, restore,
+and past-present-past queries. For resource correlations, distinguish instant
+edges from viewport-wide history and failed intent from applied state. Wait for
+both graph and table to settle; one completed panel does not establish the other.
 For layered graphs, compare SVG and HTML coordinates and marker IDs in the live
 document; correct semantic output does not establish correct visible geometry.
 Cross-check node, edge, label and resolution-step highlights in both directions;

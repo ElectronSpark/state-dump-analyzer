@@ -1,0 +1,89 @@
+{
+  "equivalent_complete_response_count": 40,
+  "preliminary_note": "Generated-fixture suites may have overlapped. Use quiet paired run for final request timing. Initial first-search samples also include lazy interval construction.",
+  "before": {
+    "fresh_median_seconds": 2.768985850038007,
+    "fresh_median_cpu_seconds": 2.734375,
+    "first_search_seconds": 7.937712499988265
+  },
+  "after": {
+    "fresh_median_seconds": 1.5588503499748185,
+    "fresh_median_cpu_seconds": 1.53125,
+    "first_search_seconds": 6.556987000047229
+  },
+  "paired": {
+    "equivalent_complete_response_pairs": 16,
+    "before": {
+      "dte-000000": {
+        "count": 8,
+        "median_seconds": 2.796710350026842,
+        "median_cpu_seconds": 2.75,
+        "min_seconds": 2.7578922999091446,
+        "max_seconds": 2.8755560000427067,
+        "rss_deltas": [
+          176128,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "empty": {
+        "count": 8,
+        "median_seconds": 0.03894305002177134,
+        "median_cpu_seconds": 0.0390625,
+        "min_seconds": 0.03680300002451986,
+        "max_seconds": 0.04235070000868291,
+        "rss_deltas": [
+          368640,
+          8192,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      }
+    },
+    "after": {
+      "dte-000000": {
+        "count": 8,
+        "median_seconds": 1.5514110500225797,
+        "median_cpu_seconds": 1.5390625,
+        "min_seconds": 1.5203350000083447,
+        "max_seconds": 1.6137911999830976,
+        "rss_deltas": [
+          -57344,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "empty": {
+        "count": 8,
+        "median_seconds": 0.03636350005399436,
+        "median_cpu_seconds": 0.03125,
+        "min_seconds": 0.034890599898062646,
+        "max_seconds": 0.039511000039055943,
+        "rss_deltas": [
+          8192,
+          0,
+          0,
+          0,
+          4096,
+          0,
+          0,
+          0
+        ]
+      }
+    }
+  }
+}

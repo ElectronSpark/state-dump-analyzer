@@ -1,0 +1,1002 @@
+[
+  {
+    "id": "L01",
+    "at": "2026-10-23T04:11:24.904Z",
+    "action": "Native horizontal wheel right with lifecycle popup open",
+    "result": {
+      "back": false,
+      "forward": true,
+      "range": "\n            \n              SELECTED RANGE\n              Drag horizontally on any lane to select a period.\n            \n            \n            \n            \n              \n                Start offset (s)\n                \n              \n              \n                End offset (s)\n                \n              \n              Apply range\n              Apply and zoom\n              \n            \n          ",
+      "scroll": 0,
+      "selected": "Choose a timeline mark",
+      "window": "+120.0 s – +600.0 s",
+      "zoom": "1.5"
+    }
+  },
+  {
+    "id": "L02",
+    "at": "2026-10-23T04:11:28.885Z",
+    "action": "Reverse horizontal wheel",
+    "result": {
+      "back": false,
+      "forward": true,
+      "range": "\n            \n              SELECTED RANGE\n              Drag horizontally on any lane to select a period.\n            \n            \n            \n            \n              \n                Start offset (s)\n                \n              \n              \n                End offset (s)\n                \n              \n              Apply range\n              Apply and zoom\n              \n            \n          ",
+      "scroll": 0,
+      "selected": "Choose a timeline mark",
+      "window": "+120.0 s – +600.0 s",
+      "zoom": "1.5"
+    }
+  },
+  {
+    "id": "L03",
+    "at": "2026-10-23T04:11:32.928Z",
+    "action": "Plain wheel down over lane track",
+    "result": {
+      "back": false,
+      "forward": true,
+      "range": "\n            \n              SELECTED RANGE\n              Drag horizontally on any lane to select a period.\n            \n            \n            \n            \n              \n                Start offset (s)\n                \n              \n              \n                End offset (s)\n                \n              \n              Apply range\n              Apply and zoom\n              \n            \n          ",
+      "scroll": 0,
+      "selected": "Choose a timeline mark",
+      "window": "+120.0 s – +600.0 s",
+      "zoom": "1.5"
+    }
+  },
+  {
+    "id": "L04",
+    "at": "2026-10-23T04:11:37.088Z",
+    "action": "Plain wheel up over lane label",
+    "result": {
+      "back": false,
+      "forward": true,
+      "range": "\n            \n              SELECTED RANGE\n              Drag horizontally on any lane to select a period.\n            \n            \n            \n            \n              \n                Start offset (s)\n                \n              \n              \n                End offset (s)\n                \n              \n              Apply range\n              Apply and zoom\n              \n            \n          ",
+      "scroll": 0,
+      "selected": "Choose a timeline mark",
+      "window": "+120.0 s – +600.0 s",
+      "zoom": "1.5"
+    }
+  },
+  {
+    "id": "L05",
+    "at": "2026-10-23T04:11:48.954Z",
+    "action": "Horizontal wheel on uncovered lane track",
+    "result": {
+      "back": false,
+      "forward": true,
+      "range": "\n            \n              SELECTED RANGE\n              Drag horizontally on any lane to select a period.\n            \n            \n            \n            \n              \n                Start offset (s)\n                \n              \n              \n                End offset (s)\n                \n              \n              Apply range\n              Apply and zoom\n              \n            \n          ",
+      "scroll": 0,
+      "selected": "Choose a timeline mark",
+      "window": "+240.0 s – +720.0 s",
+      "zoom": "1.5"
+    }
+  },
+  {
+    "id": "L06",
+    "at": "2026-10-23T04:11:53.222Z",
+    "action": "Vertical wheel on uncovered lane track",
+    "result": {
+      "back": false,
+      "forward": true,
+      "range": "\n            \n              SELECTED RANGE\n              Drag horizontally on any lane to select a period.\n            \n            \n            \n            \n              \n                Start offset (s)\n                \n              \n              \n                End offset (s)\n                \n              \n              Apply range\n              Apply and zoom\n              \n            \n          ",
+      "scroll": 288,
+      "selected": "Choose a timeline mark",
+      "window": "+240.0 s – +720.0 s",
+      "zoom": "1.5"
+    }
+  },
+  {
+    "id": "L07",
+    "at": "2026-10-23T04:11:57.538Z",
+    "action": "Vertical wheel over label returns lanes to top",
+    "result": {
+      "back": false,
+      "forward": true,
+      "range": "\n            \n              SELECTED RANGE\n              Drag horizontally on any lane to select a period.\n            \n            \n            \n            \n              \n                Start offset (s)\n                \n              \n              \n                End offset (s)\n                \n              \n              Apply range\n              Apply and zoom\n              \n            \n          ",
+      "scroll": 0,
+      "selected": "Choose a timeline mark",
+      "window": "+240.0 s – +720.0 s",
+      "zoom": "1.5"
+    }
+  },
+  {
+    "id": "L08",
+    "at": "2026-10-23T04:12:31.653Z",
+    "action": "Three horizontal left/right cycles",
+    "result": [
+      {
+        "window": "+174.0 s – +654.0 s",
+        "zoom": "1.5",
+        "scroll": 0
+      },
+      {
+        "window": "+240.0 s – +720.0 s",
+        "zoom": "1.5",
+        "scroll": 0
+      },
+      {
+        "window": "+174.0 s – +654.0 s",
+        "zoom": "1.5",
+        "scroll": 0
+      },
+      {
+        "window": "+240.0 s – +720.0 s",
+        "zoom": "1.5",
+        "scroll": 0
+      },
+      {
+        "window": "+174.0 s – +654.0 s",
+        "zoom": "1.5",
+        "scroll": 0
+      },
+      {
+        "window": "+240.0 s – +720.0 s",
+        "zoom": "1.5",
+        "scroll": 0
+      }
+    ]
+  },
+  {
+    "id": "L09",
+    "at": "2026-10-23T04:13:05.362Z",
+    "action": "Back view after repeated wheel",
+    "result": {
+      "back": false,
+      "forward": false,
+      "scroll": 0,
+      "window": "+174.0 s – +654.0 s",
+      "zoom": "1.5"
+    }
+  },
+  {
+    "id": "L10",
+    "at": "2026-10-23T04:13:09.750Z",
+    "action": "Forward restores exact window",
+    "result": {
+      "back": false,
+      "forward": true,
+      "scroll": 0,
+      "window": "+240.0 s – +720.0 s",
+      "zoom": "1.5"
+    }
+  },
+  {
+    "id": "L11",
+    "at": "2026-10-23T04:13:14.266Z",
+    "action": "Zoom-in then immediate Fit",
+    "result": {
+      "back": false,
+      "forward": true,
+      "scroll": 0,
+      "window": "+0.0 s – +720.0 s",
+      "zoom": "1"
+    }
+  },
+  {
+    "id": "L12",
+    "at": "2026-10-23T04:13:32.642Z",
+    "action": "Apply 200–300s range and zoom",
+    "result": {
+      "back": false,
+      "forward": true,
+      "scroll": 0,
+      "window": "+190.4 s – +309.5 s",
+      "zoom": "6.048"
+    }
+  },
+  {
+    "id": "L13",
+    "at": "2026-10-23T04:13:36.918Z",
+    "action": "Pan selected range then Fit preserves range",
+    "result": {
+      "end": "300",
+      "start": "200",
+      "window": "+0.0 s – +720.0 s"
+    }
+  },
+  {
+    "id": "V01",
+    "at": "2026-10-23T04:13:53.560Z",
+    "action": "Open VPN service details using keyboard",
+    "result": {
+      "focus": "<button type=\"button\" data-route-presentation-close=\"\" aria-label=\"Close service context\">×</button>",
+      "nodes": [
+        {
+          "classes": "mn-map-node is-selected is-route-member is-primary is-active is-route-source",
+          "id": "member:node-a"
+        },
+        {
+          "classes": "mn-map-node is-route-member is-primary is-active",
+          "id": "member:transit-p-1"
+        },
+        {
+          "classes": "mn-map-node is-route-member is-primary is-active is-route-destination",
+          "id": "member:node-b"
+        }
+      ],
+      "popup": "SERVICE CONTEXT · NOT A FORWARDING HOP\nblue VPN overlay · MPLS L3VPN\n1 candidate path · provided by demo.example-router\n×\n\nTenant routing and VPN-label context describes the service carried over the o",
+      "popupHidden": false,
+      "strip": "SERVICE CONTEXT\nblue VPN overlay · MPLS L3VPN\nPath context does not imply device participation",
+      "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=focused&route_path=route-path%3Ainventory%3Ageneric-mpls_l3vpn-blue-vpnv4_unicast%3Anode-a%3Anode-b"
+    }
+  },
+  {
+    "id": "V02",
+    "at": "2026-10-23T04:13:55.538Z",
+    "action": "Switch to return with service popup pinned",
+    "result": {
+      "focus": "<button type=\"button\" role=\"tab\" data-route-direction=\"reverse\" aria-selected=\"true\">\n                  <span>Return</span><small>PE-B / Beta NOS → PE-A / Alpha NOS (return target)</small><i data-direction-state=\"reverse\" class=\"is-good\">1 ",
+      "nodes": [
+        {
+          "classes": "mn-map-node is-route-member is-primary is-active is-route-source",
+          "id": "member:node-b"
+        },
+        {
+          "classes": "mn-map-node is-route-member is-primary is-active",
+          "id": "member:transit-p-1"
+        },
+        {
+          "classes": "mn-map-node is-selected is-route-member is-primary is-active is-route-destination",
+          "id": "member:node-a"
+        }
+      ],
+      "popup": "",
+      "popupHidden": true,
+      "strip": "SERVICE CONTEXT\nblue VPN overlay · MPLS L3VPN\nPath context does not imply device participation",
+      "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=focused&route_path=route-path%3Ainventory%3Ageneric-mpls_l3vpn-blue-vpnv4_unicast%3Anode-b%3Anode-a"
+    }
+  },
+  {
+    "id": "V03",
+    "at": "2026-10-23T04:13:57.569Z",
+    "action": "Open return context then switch All paths",
+    "result": {
+      "focus": "<button type=\"button\" data-route-graph-mode=\"all\" aria-pressed=\"true\">All paths</button>",
+      "nodes": [
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-primary is-active is-route-source",
+          "id": "member:node-b"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-primary is-active",
+          "id": "member:transit-p-1"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-primary is-active is-route-destination",
+          "id": "member:node-a"
+        }
+      ],
+      "popup": "",
+      "popupHidden": true,
+      "strip": "SERVICE CONTEXT\nblue VPN overlay · MPLS L3VPN\nPath context does not imply device participation",
+      "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all"
+    }
+  },
+  {
+    "id": "V04",
+    "at": "2026-10-23T04:14:12.271Z",
+    "action": "Page-scroll pinned VPN context until anchor is off-screen",
+    "result": {
+      "anchor": {
+        "bottom": -263.171875,
+        "height": 37.1875,
+        "left": 270.5,
+        "right": 454.6875,
+        "top": -300.359375,
+        "width": 184.1875,
+        "x": 270.5,
+        "y": -300.359375
+      },
+      "hidden": false,
+      "popup": {
+        "bottom": 819.640625,
+        "height": 330,
+        "left": 468.6875,
+        "right": 898.6875,
+        "top": 489.640625,
+        "width": 430,
+        "x": 468.6875,
+        "y": 489.640625
+      }
+    }
+  },
+  {
+    "id": "V06",
+    "at": "2026-10-23T04:14:31.962Z",
+    "action": "Repeat page-scroll away from pinned service anchor",
+    "result": {
+      "anchor": {
+        "bottom": -263.171875,
+        "height": 37.1875,
+        "left": 270.5,
+        "right": 454.6875,
+        "top": -300.359375,
+        "width": 184.1875,
+        "x": 270.5,
+        "y": -300.359375
+      },
+      "hidden": false,
+      "popup": {
+        "bottom": 763.640625,
+        "height": 330,
+        "left": 468.6875,
+        "right": 898.6875,
+        "top": 433.640625,
+        "width": 430,
+        "x": 468.6875,
+        "y": 433.640625
+      },
+      "text": "SERVICE CONTEXT · NOT A FORWARDING HOP\nblue VPN overlay · MPLS L3VPN\n1 candidate path · provided by demo.example-router\n×\n\nTenant routing and VPN-label context describes the service carried over the outer path. Transit nodes need not participate in the VPN.\n\n•\nRouting Context\nblue\n•\nRoute Family\nvpnv4_unicast\n•\nProtocol Chain\nbgp-vpnv4 → segment-routing-mpls\n•\nEncapsulation\nKind: mpls_l3vpn · Actions: push_transport_and_vpn → swap → pop"
+    }
+  },
+  {
+    "id": "V07",
+    "at": "2026-10-23T04:14:33.511Z",
+    "action": "Escape closes detached popup and restores trigger focus",
+    "result": {
+      "focus": "<button type=\"button\" class=\"mn-route-presentation-trigger\" aria-label=\"blue VPN overlay · MPLS L3VPN; context for 1 candidate path. Show service details\" aria-haspopup=\"dialog\" aria-controls=\"mn-route-hover-card\" data-route-presentation-tr",
+      "nodes": [
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-primary is-active is-route-source",
+          "id": "member:node-b"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-primary is-active",
+          "id": "member:transit-p-1"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-primary is-active is-route-destination",
+          "id": "member:node-a"
+        }
+      ],
+      "popup": "",
+      "popupHidden": true,
+      "strip": "SERVICE CONTEXT\nblue VPN overlay · MPLS L3VPN\nPath context does not imply device participation",
+      "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all"
+    }
+  },
+  {
+    "id": "V08",
+    "at": "2026-10-23T04:15:01.211Z",
+    "action": "Trace EVPN multi-homing all-active",
+    "result": {
+      "focus": "<body class=\"mn-body\">\n    <div class=\"app-shell\">\n      <header class=\"topbar mn-topbar\">\n        <a class=\"brand\" href=\"/\" aria-label=\"Open the multi-node topology workspace\">\n          <span class=\"brand-mark\" aria-hidden=\"true\">RSL</spa",
+      "nodes": [],
+      "popup": "",
+      "popupHidden": true,
+      "strip": "",
+      "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all"
+    }
+  },
+  {
+    "id": "V08-settled",
+    "at": "2026-10-23T04:15:18.102Z",
+    "action": "EVPN trace after settling",
+    "result": {
+      "focus": "<body class=\"mn-body\">\n    <div class=\"app-shell\">\n      <header class=\"topbar mn-topbar\">\n        <a class=\"brand\" href=\"/\" aria-label=\"Open the multi-node topology workspace\">\n          <span class=\"brand-mark\" aria-hidden=\"true\">RSL</spa",
+      "nodes": [
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active is-route-source",
+          "id": "member:node-e"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active",
+          "id": "member:transit-p-1"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active is-route-destination",
+          "id": "member:node-a"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active",
+          "id": "member:transit-p-2"
+        }
+      ],
+      "popup": "",
+      "popupHidden": true,
+      "strip": "SERVICE CONTEXT\nblue VPN overlay · EVPN MAC/IP\nPath context does not imply device participation",
+      "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all"
+    }
+  },
+  {
+    "id": "V09",
+    "at": "2026-10-23T04:15:32.297Z",
+    "action": "Open grouped EVPN context for two candidates",
+    "result": "SERVICE CONTEXT · NOT A FORWARDING HOP\nblue VPN overlay · EVPN MAC/IP\n2 candidate paths · provided by demo.example-router\n×\n\nEVPN Type-2 and Ethernet-segment context describes the service carried over the outer path. Transit nodes need not participate in the VPN.\n\n•\nRouting Context\nblue\n•\nRoute Family\nl2vpn_evpn\n•\nProtocol Chain\nbgp-evpn → isis-l2\n•\nEncapsulation\nKind: vxlan · Remote Vtep: 10.254.0.1"
+  },
+  {
+    "id": "V10",
+    "at": "2026-10-23T04:15:33.945Z",
+    "action": "Focus P2 path chip while service panel pinned",
+    "result": {
+      "focus": "<button type=\"button\" class=\"mn-route-node-path-chip is-ecmp is-active is-route-preview\" data-route-node-path=\"route-path:generated:evpn-mh-all-active:reverse:ecmp-p2\" data-route-path-id=\"route-path:generated:evpn-mh-all-active:reverse:ecmp",
+      "nodes": [
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active is-route-source is-route-preview",
+          "id": "member:node-e"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active is-route-suppressed",
+          "id": "member:transit-p-1"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active is-route-destination is-route-preview",
+          "id": "member:node-a"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active is-route-preview",
+          "id": "member:transit-p-2"
+        }
+      ],
+      "popup": "PATH PREVIEW\nECMP member · EVPN multihoming all-active / ecmp p2\nResolved\nPE-E / Eta border NOS → P2 / Delta SR routing stack → PE-A / Alpha NOS\n1\nThe node-e example plug-in forwards toward transit-p-",
+      "popupHidden": false,
+      "strip": "SERVICE CONTEXT\nblue VPN overlay · EVPN MAC/IP\nPath context does not imply device participation",
+      "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all"
+    }
+  },
+  {
+    "id": "V11",
+    "at": "2026-10-23T04:15:36.217Z",
+    "action": "Select P2 path after service details",
+    "result": {
+      "focus": "<body class=\"mn-body\">\n    <div class=\"app-shell\">\n      <header class=\"topbar mn-topbar\">\n        <a class=\"brand\" href=\"/\" aria-label=\"Open the multi-node topology workspace\">\n          <span class=\"brand-mark\" aria-hidden=\"true\">RSL</spa",
+      "nodes": [
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active is-route-source is-route-pinned",
+          "id": "member:node-e"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active is-route-suppressed",
+          "id": "member:transit-p-1"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active is-route-destination is-route-pinned",
+          "id": "member:node-a"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active is-route-pinned",
+          "id": "member:transit-p-2"
+        }
+      ],
+      "popup": "",
+      "popupHidden": true,
+      "strip": "SERVICE CONTEXT\nblue VPN overlay · EVPN MAC/IP\nPath context does not imply device participation",
+      "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=reverse&route_view=all&route_path=route-path%3Agenerated%3Aevpn-mh-all-active%3Areverse%3Aecmp-p2"
+    }
+  },
+  {
+    "id": "V12",
+    "at": "2026-10-23T04:15:53.339Z",
+    "action": "P2 return selection → Forward focused",
+    "result": {
+      "focus": "<button type=\"button\" data-route-graph-mode=\"focused\" aria-pressed=\"true\">Focused path</button>",
+      "nodes": [
+        {
+          "classes": "mn-map-node is-selected is-route-member is-ecmp is-active is-route-source",
+          "id": "member:node-a"
+        },
+        {
+          "classes": "mn-map-node is-route-member is-ecmp is-active",
+          "id": "member:transit-p-1"
+        },
+        {
+          "classes": "mn-map-node is-route-member is-ecmp is-active is-route-destination is-direction-difference",
+          "id": "member:node-b"
+        }
+      ],
+      "popup": "",
+      "popupHidden": true,
+      "strip": "SERVICE CONTEXT\nblue VPN overlay · EVPN MAC/IP\nPath context does not imply device participation",
+      "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=focused&route_path=route-path%3Agenerated%3Aevpn-mh-all-active%3Aforward%3Aecmp-pe-b"
+    }
+  },
+  {
+    "id": "V13",
+    "at": "2026-10-23T04:15:55.693Z",
+    "action": "Grouped forward EVPN service detail",
+    "result": ""
+  },
+  {
+    "id": "V14",
+    "at": "2026-10-23T04:16:03.259Z",
+    "action": "Click grouped forward context after graph-mode switch",
+    "result": "SERVICE CONTEXT · NOT A FORWARDING HOP\nblue VPN overlay · EVPN MAC/IP\n2 candidate paths · provided by demo.example-router\n×\n\nEVPN Type-2 and Ethernet-segment context describes the service carried over the outer path. Transit nodes need not participate in the VPN.\n\n•\nRouting Context\nblue\n•\nRoute Family\nl2vpn_evpn\n•\nProtocol Chain\nbgp-evpn → isis-l2\n•\nEncapsulation\nKind: vxlan · Remote Vtep: 10.254.0.2\n•\nEncapsulation\nKind: vxlan · Remote Vtep: 10.254.0.5"
+  },
+  {
+    "id": "V15",
+    "at": "2026-10-23T04:16:40.454Z",
+    "action": "Scroll pinned context then focus graph zoom control",
+    "result": {
+      "focus": "<button type=\"button\" data-graph-action=\"zoom-in\" aria-label=\"Zoom in\">+</button>",
+      "hidden": false,
+      "scroll": 51,
+      "trigger": {
+        "bottom": 421.21875,
+        "height": 37.1875,
+        "left": 270.5,
+        "right": 460.109375,
+        "top": 384.03125,
+        "width": 189.609375,
+        "x": 270.5,
+        "y": 384.03125
+      }
+    }
+  },
+  {
+    "id": "V16",
+    "at": "2026-10-23T04:16:42.164Z",
+    "action": "Move wheel pointer back over service trigger with zoom control focused",
+    "result": {
+      "focus": "<button type=\"button\" data-graph-action=\"zoom-in\" aria-label=\"Zoom in\">+</button>",
+      "hidden": false,
+      "scroll": 51
+    }
+  },
+  {
+    "id": "V17",
+    "at": "2026-10-23T04:16:50.023Z",
+    "action": "Passive pointer return over actual service trigger",
+    "result": {
+      "focus": "<button type=\"button\" data-route-presentation-close=\"\" aria-label=\"Close service context\">×</button>",
+      "hidden": false,
+      "scroll": 0
+    }
+  },
+  {
+    "id": "V18",
+    "at": "2026-10-23T04:17:07.991Z",
+    "action": "Repeat passive pointer re-entry into pinned context",
+    "result": {
+      "before": {
+        "focus": "<button type=\"button\" data-graph-action=\"zoom-in\" aria-label=\"Zoom in\">+</button>",
+        "scroll": 51,
+        "trigger": {
+          "bottom": 421.21875,
+          "height": 37.1875,
+          "left": 270.5,
+          "right": 460.109375,
+          "top": 384.03125,
+          "width": 189.609375,
+          "x": 270.5,
+          "y": 384.03125
+        }
+      },
+      "after": {
+        "focus": "<button type=\"button\" data-route-presentation-close=\"\" aria-label=\"Close service context\">×</button>",
+        "hidden": false,
+        "scroll": 0
+      }
+    }
+  },
+  {
+    "id": "V19",
+    "at": "2026-10-23T04:17:09.559Z",
+    "action": "Escape then graph zoom and Fit keeps context outside graph",
+    "result": {
+      "focus": "<button type=\"button\" data-graph-action=\"fit\">Fit</button>",
+      "nodes": [
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active is-route-source",
+          "id": "member:node-a"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active",
+          "id": "member:transit-p-1"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active is-route-destination",
+          "id": "member:node-b"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active",
+          "id": "member:transit-p-2"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active is-route-destination",
+          "id": "member:node-e"
+        }
+      ],
+      "popup": "",
+      "popupHidden": true,
+      "strip": "SERVICE CONTEXT\nblue VPN overlay · EVPN MAC/IP\nPath context does not imply device participation",
+      "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all"
+    }
+  },
+  {
+    "id": "V20",
+    "at": "2026-10-23T04:17:59.613Z",
+    "action": "Three Forward/Return × Focused/All cycles",
+    "result": [
+      {
+        "nodes": 3,
+        "popupHidden": true,
+        "title": "Return · ECMP member · EVPN multihoming all-active / ecmp p1"
+      },
+      {
+        "nodes": 3,
+        "popupHidden": true,
+        "title": "Forward · ECMP member · EVPN multihoming all-active / ecmp pe b"
+      },
+      {
+        "nodes": 3,
+        "popupHidden": true,
+        "title": "Return · ECMP member · EVPN multihoming all-active / ecmp p1"
+      },
+      {
+        "nodes": 3,
+        "popupHidden": true,
+        "title": "Forward · ECMP member · EVPN multihoming all-active / ecmp pe b"
+      },
+      {
+        "nodes": 3,
+        "popupHidden": true,
+        "title": "Return · ECMP member · EVPN multihoming all-active / ecmp p1"
+      },
+      {
+        "nodes": 3,
+        "popupHidden": true,
+        "title": "Forward · ECMP member · EVPN multihoming all-active / ecmp pe b"
+      }
+    ]
+  },
+  {
+    "id": "X01-progress",
+    "at": "2026-10-23T04:19:20.594Z",
+    "action": "Open transit P1 from EVPN topology",
+    "result": {
+      "loading": "RSL\nRouter State Lab\ntemporal dump review prototype\nManagement\nTimeline\nResources\nCorrelations\nConsistency\nTopology\nFabric\nPrivate analysis\nRoute\nDashboards\nReview gaps 3\nNode analysis workspace.\nFull-scale mode loaded all 1,250,004 matched normalized events and 7,506 resources from 005-transit-p-1.tgz; visible DOM rows and timeline lanes are windowed for browser safety.\nMULTI-NODE CONTEXT\ntransit-p-1\nrelative capture context (0 ns); opened at its resolved time · The member revision is loaded.\ntransit-p-1.generated.v1\ndemo.generated-topology\ndemo.generated-observed\ncontext tctx1-6dbe8fa803db60",
+      "title": "P1 / Gamma routing daemon · Router State Lab"
+    }
+  },
+  {
+    "id": "X02",
+    "at": "2026-10-23T04:20:04.550Z",
+    "action": "Transit lane zoom then horizontal and vertical wheel",
+    "result": {
+      "scroll": 188,
+      "window": "+197.2 s – +677.2 s",
+      "zoom": "1.5"
+    }
+  },
+  {
+    "id": "X03",
+    "at": "2026-10-23T04:20:16.972Z",
+    "action": "Second Back returns from transit node to VPN result",
+    "result": {
+      "focus": "<body class=\"mn-body\">\n    <div class=\"app-shell\">\n      <header class=\"topbar mn-topbar\">\n        <a class=\"brand\" href=\"/\" aria-label=\"Open the multi-node topology workspace\">\n          <span class=\"brand-mark\" aria-hidden=\"true\">RSL</spa",
+      "nodes": [],
+      "popup": "",
+      "popupHidden": true,
+      "strip": "",
+      "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all"
+    }
+  },
+  {
+    "id": "X03-settled",
+    "at": "2026-10-23T04:20:57.382Z",
+    "action": "Route URL restored but graph has no candidates after browser Back",
+    "result": {
+      "fields": [
+        {
+          "id": "mn-route-scenario",
+          "value": "evpn-mh-all-active"
+        },
+        {
+          "id": "mn-route-start",
+          "value": "PE-A / Alpha NOS"
+        },
+        {
+          "id": "mn-route-source",
+          "value": "PE-A / Alpha NOS"
+        },
+        {
+          "id": "mn-route-destination",
+          "value": "node-e"
+        },
+        {
+          "id": "mn-route-vrf",
+          "value": "blue"
+        },
+        {
+          "id": "mn-route-validation",
+          "value": "bidirectional"
+        },
+        {
+          "id": "mn-route-family",
+          "value": "l2vpn_evpn"
+        },
+        {
+          "id": "mn-route-type",
+          "value": "evpn_mac_ip"
+        },
+        {
+          "id": "mn-route-policy",
+          "value": "best_effort"
+        },
+        {
+          "id": "mn-route-steering",
+          "value": "observed"
+        },
+        {
+          "id": "mn-route-max-hops",
+          "value": "64"
+        },
+        {
+          "id": "mn-route-max-recursion",
+          "value": "16"
+        }
+      ],
+      "routeContainers": [
+        {
+          "hidden": false,
+          "id": "mn-route-api-status",
+          "text": "RESOLVERS READY"
+        },
+        {
+          "hidden": false,
+          "id": "mn-route-limits-status",
+          "text": ""
+        },
+        {
+          "hidden": false,
+          "id": "mn-route-error",
+          "text": ""
+        },
+        {
+          "hidden": false,
+          "id": "mn-route-map-empty",
+          "text": "No candidate paths were returned for this direction."
+        },
+        {
+          "hidden": false,
+          "id": "mn-route-result",
+          "text": "\n            Choose a trace start and traffic endpoints.Trace the route to compare forward, return, primary, and alternate paths.\n            \n              \n                \n                \n                  primary\n                  active ECMP\n                  standby / inactive\n                  control-plane only / not installed\n                  loop-closing segment\n                  policy stop\n                  inconsistent\n                  direction difference\n                  inferred\n                  unresolved\n                  service overlay (not a hop)\n                \n              \n\n              \n                \n                  \n                    PATH INDEX\n                    Candidate paths\n                  \n                  \n                \n\n                \n                  \n                    \n                      SELECTED PATH\n                      Route resolution\n                    \n                    \n                  \n                  \n                  \n                    \n                      \n                        PACKET STATE\n                        Packet evolution\n                      \n                      \n                    \n                    \n                    \n                  \n                  \n                    Resolution steps\n                    Hover a step to highlight its node or link on the route map.\n                  \n                  \n                \n              \n\n              \n                \n                  CONSISTENCY REPORT\n                  Findings\n                \n                \n              \n            \n          "
+        },
+        {
+          "hidden": false,
+          "id": "mn-route-empty",
+          "text": "Choose a trace start and traffic endpoints.Trace the route to compare forward, return, primary, and alternate paths."
+        },
+        {
+          "hidden": false,
+          "id": "mn-route-summary",
+          "text": ""
+        },
+        {
+          "hidden": false,
+          "id": "mn-route-packet-status",
+          "text": ""
+        },
+        {
+          "hidden": false,
+          "id": "mn-route-table-summary",
+          "text": "Visible routes\n693 / 693\ncomplete loaded page\nNode tables\n10\nincomplete coverage\nRouting domains\n4 VRFs\n5 route families\nSnapshot basis\nRelative Capture Vector\nrtctx1-c456af43bf9872babc525e27"
+        },
+        {
+          "hidden": false,
+          "id": "mn-route-table-error",
+          "text": ""
+        }
+      ],
+      "scenario": "evpn-mh-all-active",
+      "strip": "",
+      "title": "No candidate paths"
+    }
+  },
+  {
+    "id": "X04",
+    "at": "2026-10-23T04:21:17.803Z",
+    "action": "Explicit Trace recovers EVPN after Back",
+    "result": {
+      "focus": "<body class=\"mn-body\">\n    <div class=\"app-shell\">\n      <header class=\"topbar mn-topbar\">\n        <a class=\"brand\" href=\"/\" aria-label=\"Open the multi-node topology workspace\">\n          <span class=\"brand-mark\" aria-hidden=\"true\">RSL</spa",
+      "nodes": [
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active is-route-source",
+          "id": "member:node-a"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active",
+          "id": "member:transit-p-1"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active is-route-destination",
+          "id": "member:node-b"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active",
+          "id": "member:transit-p-2"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-ecmp is-active is-route-destination",
+          "id": "member:node-e"
+        }
+      ],
+      "popup": "",
+      "popupHidden": true,
+      "strip": "SERVICE CONTEXT\nblue VPN overlay · EVPN MAC/IP\nPath context does not imply device participation",
+      "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=evpn-mh-all-active&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-e&route_vrf=blue&route_family=l2vpn_evpn&route_type=evpn_mac_ip&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all"
+    }
+  },
+  {
+    "id": "X05",
+    "at": "2026-10-23T04:21:28.655Z",
+    "action": "Reload All-paths route URL after ready",
+    "result": {
+      "error": "",
+      "ready": "resolvers ready",
+      "runDisabled": false,
+      "scenario": "evpn-mh-all-active",
+      "strip": "",
+      "title": "No candidate paths"
+    }
+  },
+  {
+    "id": "V21",
+    "at": "2026-10-23T04:21:40.581Z",
+    "action": "EVPN → ordinary MPLS transport after settling",
+    "result": {
+      "focus": "<body class=\"mn-body\">\n    <div class=\"app-shell\">\n      <header class=\"topbar mn-topbar\">\n        <a class=\"brand\" href=\"/\" aria-label=\"Open the multi-node topology workspace\">\n          <span class=\"brand-mark\" aria-hidden=\"true\">RSL</spa",
+      "nodes": [
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member  is-route-mixed is-route-source",
+          "id": "member:node-a"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-primary is-active",
+          "id": "member:transit-p-1"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member  is-route-mixed is-route-destination",
+          "id": "member:node-b"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-standby is-inactive",
+          "id": "member:transit-p-2"
+        }
+      ],
+      "popup": "",
+      "popupHidden": true,
+      "strip": "",
+      "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=single-active-primary&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=default&route_family=mpls_labeled_unicast&route_type=mpls_transport&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all"
+    }
+  },
+  {
+    "id": "V22",
+    "at": "2026-10-23T04:21:54.541Z",
+    "action": "Nested VPN scenario after settling",
+    "result": {
+      "focus": "<body class=\"mn-body\">\n    <div class=\"app-shell\">\n      <header class=\"topbar mn-topbar\">\n        <a class=\"brand\" href=\"/\" aria-label=\"Open the multi-node topology workspace\">\n          <span class=\"brand-mark\" aria-hidden=\"true\">RSL</spa",
+      "nodes": [
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-primary is-active is-route-source",
+          "id": "member:node-a"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-primary is-active",
+          "id": "member:transit-p-1"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-primary is-active",
+          "id": "member:transit-p-2"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-primary is-active is-route-destination",
+          "id": "member:node-b"
+        }
+      ],
+      "popup": "",
+      "popupHidden": true,
+      "strip": "SERVICE CONTEXT\nblue VPN overlay · MPLS L3VPN\nPath context does not imply device participation",
+      "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=packet-vpn-over-vpn&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all"
+    }
+  },
+  {
+    "id": "V23",
+    "at": "2026-10-23T04:22:49.486Z",
+    "action": "Repeat mode switch then keyboard service opening three times",
+    "result": [
+      {
+        "anchorY": -370.359375,
+        "focus": "BODY",
+        "hidden": true,
+        "text": ""
+      },
+      {
+        "anchorY": -374.359375,
+        "focus": "BODY",
+        "hidden": true,
+        "text": ""
+      },
+      {
+        "anchorY": -370.359375,
+        "focus": "BODY",
+        "hidden": true,
+        "text": ""
+      }
+    ]
+  },
+  {
+    "id": "V24",
+    "at": "2026-10-23T04:23:09.497Z",
+    "action": "Keyboard opening after settling each graph-mode switch",
+    "result": {
+      "focus": "<button type=\"button\" data-route-presentation-close=\"\" aria-label=\"Close service context\">×</button>",
+      "nodes": [
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-primary is-active is-route-source",
+          "id": "member:node-a"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-primary is-active",
+          "id": "member:transit-p-1"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-primary is-active",
+          "id": "member:transit-p-2"
+        },
+        {
+          "classes": "mn-map-node mn-route-overview-node is-route-member is-primary is-active is-route-destination",
+          "id": "member:node-b"
+        }
+      ],
+      "popup": "SERVICE CONTEXT · NOT A FORWARDING HOP\nblue VPN overlay · MPLS L3VPN\n1 candidate path · provided by demo.example-router\n×\n\nTenant routing and VPN-label context describes the service carried over the o",
+      "popupHidden": false,
+      "strip": "SERVICE CONTEXT\nblue VPN overlay · MPLS L3VPN\nPath context does not imply device participation",
+      "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=packet-vpn-over-vpn&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=all"
+    }
+  },
+  {
+    "id": "V25",
+    "at": "2026-10-23T04:23:56.490Z",
+    "action": "Rapid pointer mode switches followed by Enter on service context",
+    "result": {
+      "anchor": {
+        "bottom": 488.828125,
+        "height": 37.1875,
+        "left": 270.5,
+        "right": 454.6875,
+        "top": 451.640625,
+        "width": 184.1875,
+        "x": 270.5,
+        "y": 451.640625
+      },
+      "focus": "<body class=\"mn-body\">\n    <div class=\"app-shell\">\n      <header class=\"topbar mn-topbar\">\n        <a class=\"brand\" href=\"/\" aria-label=\"Open the multi-node top",
+      "hidden": false
+    }
+  },
+  {
+    "id": "V26",
+    "at": "2026-10-23T04:24:09.665Z",
+    "action": "Capture rapid keyboard mode/open failure again",
+    "result": {
+      "anchorY": -370.359375,
+      "focus": "BODY",
+      "hidden": true,
+      "role": "tooltip"
+    }
+  },
+  {
+    "id": "V27",
+    "at": "2026-10-23T04:26:35.742Z",
+    "action": "Restore original blue MPLS L3VPN focused route",
+    "result": {
+      "focus": "<button type=\"button\" data-route-graph-mode=\"focused\" aria-pressed=\"true\">Focused path</button>",
+      "nodes": [
+        {
+          "classes": "mn-map-node is-selected is-route-member is-primary is-active is-route-source",
+          "id": "member:node-a"
+        },
+        {
+          "classes": "mn-map-node is-route-member is-primary is-active",
+          "id": "member:transit-p-1"
+        },
+        {
+          "classes": "mn-map-node is-route-member is-primary is-active is-route-destination",
+          "id": "member:node-b"
+        }
+      ],
+      "popup": "",
+      "popupHidden": true,
+      "strip": "SERVICE CONTEXT\nblue VPN overlay · MPLS L3VPN\nPath context does not imply device participation",
+      "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=focused&route_path=route-path%3Ainventory%3Ageneric-mpls_l3vpn-blue-vpnv4_unicast%3Anode-a%3Anode-b"
+    }
+  }
+]

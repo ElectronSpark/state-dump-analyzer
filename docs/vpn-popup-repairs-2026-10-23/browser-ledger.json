@@ -1,0 +1,203 @@
+[
+  {
+    "id": "LV01-partial",
+    "at": "2026-10-23T04:36:35.996Z",
+    "action": "Scroll pinned trigger close to sticky header",
+    "result": {
+      "anchor": {
+        "bottom": 112.828125,
+        "height": 37.1875,
+        "left": 270.5,
+        "right": 454.6875,
+        "top": 75.640625,
+        "width": 184.1875,
+        "x": 270.5,
+        "y": 75.640625
+      },
+      "hidden": false,
+      "popup": {
+        "bottom": 410,
+        "height": 330,
+        "left": 468.6875,
+        "right": 898.6875,
+        "top": 80,
+        "width": 430,
+        "x": 468.6875,
+        "y": 80
+      }
+    }
+  },
+  {
+    "id": "LV01-dismiss",
+    "at": "2026-10-23T04:36:37.597Z",
+    "action": "Scroll original trigger completely out of view",
+    "result": {
+      "anchor": {
+        "bottom": -263.171875,
+        "height": 37.1875,
+        "left": 270.5,
+        "right": 454.6875,
+        "top": -300.359375,
+        "width": 184.1875,
+        "x": 270.5,
+        "y": -300.359375
+      },
+      "focus": "BODY",
+      "hidden": true
+    }
+  },
+  {
+    "id": "LV01-no-revival",
+    "at": "2026-10-23T04:36:39.211Z",
+    "action": "Scroll back to the trigger",
+    "result": false
+  },
+  {
+    "id": "LV01-header-partial",
+    "at": "2026-10-23T04:36:53.009Z",
+    "action": "Leave part of trigger visible below sticky header",
+    "result": {
+      "headerBottom": 68,
+      "hidden": false,
+      "trigger": {
+        "bottom": 84.828125,
+        "height": 37.1875,
+        "left": 270.5,
+        "right": 454.6875,
+        "top": 47.640625,
+        "width": 184.1875,
+        "x": 270.5,
+        "y": 47.640625
+      }
+    }
+  },
+  {
+    "id": "LV01-header-hidden",
+    "at": "2026-10-23T04:36:54.588Z",
+    "action": "Clip remaining trigger behind sticky header",
+    "result": {
+      "hidden": true,
+      "trigger": {
+        "bottom": 46.828125,
+        "height": 37.1875,
+        "left": 270.5,
+        "right": 454.6875,
+        "top": 9.640625,
+        "width": 184.1875,
+        "x": 270.5,
+        "y": 9.640625
+      }
+    }
+  },
+  {
+    "id": "LV02-read",
+    "at": "2026-10-23T04:37:49.770Z",
+    "action": "Scroll inside pinned EVPN details",
+    "result": {
+      "hidden": false,
+      "scroll": 51
+    }
+  },
+  {
+    "id": "LV02-passive",
+    "at": "2026-10-23T04:38:00.300Z",
+    "action": "Return pointer over pinned service label with graph control focused",
+    "result": {
+      "before": {
+        "focus": "<button type=\"button\" data-graph-action=\"zoom-in\" aria-label=\"Zoom in\">+</button>",
+        "hidden": false,
+        "rect": {
+          "bottom": 421.21875,
+          "height": 37.1875,
+          "left": 270.5,
+          "right": 460.109375,
+          "top": 384.03125,
+          "width": 189.609375,
+          "x": 270.5,
+          "y": 384.03125
+        },
+        "scroll": 51
+      },
+      "after": {
+        "focus": "<button type=\"button\" data-graph-action=\"zoom-in\" aria-label=\"Zoom in\">+</button>",
+        "hidden": false,
+        "scroll": 51
+      }
+    }
+  },
+  {
+    "id": "context-direction",
+    "at": "2026-10-23T04:38:12.464Z",
+    "action": "Direction change retires old service pin",
+    "result": false
+  },
+  {
+    "id": "LV03-rapid",
+    "at": "2026-10-23T04:38:36.259Z",
+    "action": "Four Focused → All → Space sequences without settling between actions",
+    "result": [
+      {
+        "anchorY": 451.640625,
+        "focus": "<button type=\"button\" data-route-presentation-close=\"\" aria-label=\"Close service context\">×</button>",
+        "hidden": false,
+        "role": "dialog"
+      },
+      {
+        "anchorY": 451.640625,
+        "focus": "<button type=\"button\" data-route-presentation-close=\"\" aria-label=\"Close service context\">×</button>",
+        "hidden": false,
+        "role": "dialog"
+      },
+      {
+        "anchorY": 451.640625,
+        "focus": "<button type=\"button\" data-route-presentation-close=\"\" aria-label=\"Close service context\">×</button>",
+        "hidden": false,
+        "role": "dialog"
+      },
+      {
+        "anchorY": 451.640625,
+        "focus": "<button type=\"button\" data-route-presentation-close=\"\" aria-label=\"Close service context\">×</button>",
+        "hidden": false,
+        "role": "dialog"
+      }
+    ]
+  },
+  {
+    "id": "LV03-pointer-enter",
+    "at": "2026-10-23T04:38:47.659Z",
+    "action": "Pointer mode switches followed immediately by Enter",
+    "result": {
+      "focus": "<button type=\"button\" data-route-presentation-close=\"\" aria-label=\"Close service context\">×</button>",
+      "hidden": false,
+      "role": "dialog"
+    }
+  },
+  {
+    "id": "close-escape",
+    "at": "2026-10-23T04:38:49.117Z",
+    "action": "Escape restores focus without reopening",
+    "result": {
+      "focus": "<button type=\"button\" class=\"mn-route-presentation-trigger\" aria-label=\"blue VPN overlay · MPLS L3VPN; context for 1 candidate path. Show service details\" aria-haspopup=\"dialog\" aria-controls=\"mn-route-hover-card\" data-route-presentation-tr",
+      "hidden": true
+    }
+  },
+  {
+    "id": "non-vpn-cleanup",
+    "at": "2026-10-23T04:39:24.811Z",
+    "action": "Ordinary transport clears the service strip",
+    "result": {
+      "popupHidden": true,
+      "stripHidden": true
+    }
+  },
+  {
+    "id": "restored",
+    "at": "2026-10-23T04:39:39.809Z",
+    "action": "Original focused VPN route with usable service dialog",
+    "result": {
+      "hidden": false,
+      "role": "dialog",
+      "title": "Forward · MPLS L3VPN via transit-p-1"
+    }
+  }
+]

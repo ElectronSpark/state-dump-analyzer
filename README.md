@@ -432,6 +432,7 @@ For the shortest working path, use these resources:
 - **Copy:** [Demo plug-in teaching slice](demo/README.md)
 - **Extend:** [Detailed author guide](docs/plugin-author-guide.md)
 - **Reference:** [Normative plug-in contract](docs/plugin-contract.md)
+- **Validate historical routes:** [Temporal route and correlation checks](docs/plugin-api-validation.md#historical-route-and-correlation-checks).
 - **Validate source navigation:** [Core source-record filters](docs/api-contract.md#6-timeline-and-cluster-expansion), exercised by `python -m unittest tests.test_source_record_core -v`.
 
 The quickstart is the single copy-paste workflow for installing and validating

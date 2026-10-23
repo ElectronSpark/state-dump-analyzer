@@ -972,9 +972,12 @@ def _select_declared_field_value(
                 if branch.get(_PROPERTY_PATH_TERMINAL):
                     break
                 branch = branch.get(part)
-                if not isinstance(branch, Mapping):
+                # Compiled property tries contain child dictionaries or the
+                # terminal sentinel; a property lookup can only miss or find
+                # a child. Avoid an ABC check for every input key/path segment.
+                if branch is None:
                     break
-            if not isinstance(branch, Mapping):
+            if branch is None:
                 continue
             selected = _select_declared_field_value(nested, branch, matches)
             if selected is not _DROP_CLIENT_FIELD:
@@ -3208,6 +3211,26 @@ class NormalizedDataService:
         query_cancellation_checkpoint()
         dataset = self.load_dataset()
         runtime = self.history_runtime(dataset)
+        descriptors = self._descriptors(dataset)
+        view = self._resource_state_view(
+            dataset, runtime, descriptors, resource_identifier, timestamp_ns,
+            perspective_ref=perspective_ref,
+        )
+        return redact_resource_view(view, descriptors.get(view["kind"]))
+
+    def _resource_state_view(
+        self,
+        dataset: Mapping[str, Any],
+        runtime: IndexedHistory | None,
+        descriptors: Mapping[str, Mapping[str, Any]],
+        resource_identifier: str,
+        timestamp_ns: int,
+        *,
+        perspective_ref: StatusPerspectiveRef | None = None,
+    ) -> dict[str, Any]:
+        """Reconstruct once; the caller applies its publication projection."""
+
+        query_cancellation_checkpoint()
         if runtime is not None:
             record = runtime.resource_by_id.get(resource_identifier)
             lifecycle = runtime.lifecycle_by_resource.get(
@@ -3257,7 +3280,6 @@ class NormalizedDataService:
         ):
             state = dict(record.get("state", {}))
         kind = str(record.get("kind", "UNKNOWN")) if record else "UNKNOWN"
-        descriptors = self._descriptors(dataset)
         descriptor = (
             self._required_descriptor(descriptors, kind) if record is not None else None
         )
@@ -3339,7 +3361,7 @@ class NormalizedDataService:
         }
         if ambiguous:
             view["quality"] = "ambiguous"
-        return redact_resource_view(view, descriptor)
+        return view
 
     def relationships_at(
         self,
@@ -3901,7 +3923,10 @@ class NormalizedDataService:
                     return {
                         resource_id(record): resource_search_text(
                             record,
-                            self.resource_state_at(
+                            self._resource_state_view(
+                                dataset,
+                                runtime,
+                                descriptors,
                                 resource_id(record),
                                 timestamp_ns,
                             ),

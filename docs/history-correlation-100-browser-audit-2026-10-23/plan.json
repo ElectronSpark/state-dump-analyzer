@@ -1,0 +1,402 @@
+[
+  {
+    "id": 1,
+    "action": "Baseline latest-watermark primary trace"
+  },
+  {
+    "id": 2,
+    "action": "Inspect return direction at latest"
+  },
+  {
+    "id": 3,
+    "action": "Switch to all-paths at latest"
+  },
+  {
+    "id": 4,
+    "action": "Use absolute best-effort at +89s"
+  },
+  {
+    "id": 5,
+    "action": "Trace before carrier failure"
+  },
+  {
+    "id": 6,
+    "action": "Reconstruct +90.049s"
+  },
+  {
+    "id": 7,
+    "action": "Trace immediately before carrier-down"
+  },
+  {
+    "id": 8,
+    "action": "Reconstruct +90.051s"
+  },
+  {
+    "id": 9,
+    "action": "Trace immediately after carrier-down"
+  },
+  {
+    "id": 10,
+    "action": "Inspect return during carrier-down"
+  },
+  {
+    "id": 11,
+    "action": "Reconstruct +100s"
+  },
+  {
+    "id": 12,
+    "action": "Compare route table validity with selected historical basis"
+  },
+  {
+    "id": 13,
+    "action": "Trace generic blue VPN at +100s"
+  },
+  {
+    "id": 14,
+    "action": "Switch historical VPN to all paths"
+  },
+  {
+    "id": 15,
+    "action": "Inspect historical VPN service details"
+  },
+  {
+    "id": 16,
+    "action": "Reconstruct +119.999s"
+  },
+  {
+    "id": 17,
+    "action": "Trace before next-hop change"
+  },
+  {
+    "id": 18,
+    "action": "Reconstruct +120.001s"
+  },
+  {
+    "id": 19,
+    "action": "Trace after next-hop change"
+  },
+  {
+    "id": 20,
+    "action": "Reconstruct +179.999s"
+  },
+  {
+    "id": 21,
+    "action": "Trace before interface deletion"
+  },
+  {
+    "id": 22,
+    "action": "Reconstruct +180.001s"
+  },
+  {
+    "id": 23,
+    "action": "Inspect deleted-node topology and trace"
+  },
+  {
+    "id": 24,
+    "action": "Reconstruct +240.099s"
+  },
+  {
+    "id": 25,
+    "action": "Trace before carrier restoration"
+  },
+  {
+    "id": 26,
+    "action": "Reconstruct +240.101s"
+  },
+  {
+    "id": 27,
+    "action": "Trace after carrier restoration"
+  },
+  {
+    "id": 28,
+    "action": "Reconstruct +299.999s"
+  },
+  {
+    "id": 29,
+    "action": "Reconstruct +300.001s"
+  },
+  {
+    "id": 30,
+    "action": "Trace after interface recreation"
+  },
+  {
+    "id": 31,
+    "action": "Select EVPN all-active at +399.999s"
+  },
+  {
+    "id": 32,
+    "action": "Reconstruct +400.001s and trace EVPN"
+  },
+  {
+    "id": 33,
+    "action": "Inspect EVPN return after attachment down"
+  },
+  {
+    "id": 34,
+    "action": "Switch topology to VPN at historical failure"
+  },
+  {
+    "id": 35,
+    "action": "Reconstruct +559.999s"
+  },
+  {
+    "id": 36,
+    "action": "Reconstruct +560.001s and trace restored EVPN"
+  },
+  {
+    "id": 37,
+    "action": "Switch strict clock policy and reconstruct"
+  },
+  {
+    "id": 38,
+    "action": "Return best-effort and trace"
+  },
+  {
+    "id": 39,
+    "action": "Reconstruct before capture start"
+  },
+  {
+    "id": 40,
+    "action": "Trace before capture start"
+  },
+  {
+    "id": 41,
+    "action": "Reconstruct after watermark"
+  },
+  {
+    "id": 42,
+    "action": "Trace after watermark"
+  },
+  {
+    "id": 43,
+    "action": "Invalid absolute timestamp then retain last result"
+  },
+  {
+    "id": 44,
+    "action": "Recover valid +610s and trace"
+  },
+  {
+    "id": 45,
+    "action": "Scrub historical slider to start"
+  },
+  {
+    "id": 46,
+    "action": "Scrub slider to end"
+  },
+  {
+    "id": 47,
+    "action": "Repeated past-present-past reconstruction"
+  },
+  {
+    "id": 48,
+    "action": "Inspect direction after repeated reconstruction"
+  },
+  {
+    "id": 49,
+    "action": "Navigate historical node then Back"
+  },
+  {
+    "id": 50,
+    "action": "Restore latest and primary trace"
+  },
+  {
+    "id": 51,
+    "action": "Open PE-A single-node workspace"
+  },
+  {
+    "id": 52,
+    "action": "Open resource explorer"
+  },
+  {
+    "id": 53,
+    "action": "Find DTE000000"
+  },
+  {
+    "id": 54,
+    "action": "Select DTE000000 correlation"
+  },
+  {
+    "id": 55,
+    "action": "Expand ETG relationship branch"
+  },
+  {
+    "id": 56,
+    "action": "Inspect selected resource details"
+  },
+  {
+    "id": 57,
+    "action": "Set cursor before DTE creation"
+  },
+  {
+    "id": 58,
+    "action": "Set cursor at DTE creation"
+  },
+  {
+    "id": 59,
+    "action": "Inspect graph after DTE creation"
+  },
+  {
+    "id": 60,
+    "action": "Set cursor before multihome"
+  },
+  {
+    "id": 61,
+    "action": "Set cursor after multihome"
+  },
+  {
+    "id": 62,
+    "action": "Inspect primary and backup edge identities"
+  },
+  {
+    "id": 63,
+    "action": "Set cursor before failover"
+  },
+  {
+    "id": 64,
+    "action": "Set cursor after failover"
+  },
+  {
+    "id": 65,
+    "action": "Compare graph and tree after failover"
+  },
+  {
+    "id": 66,
+    "action": "Set cursor before restoration"
+  },
+  {
+    "id": 67,
+    "action": "Set cursor after restoration"
+  },
+  {
+    "id": 68,
+    "action": "Compare restored primary and backup"
+  },
+  {
+    "id": 69,
+    "action": "Set cursor before first churn"
+  },
+  {
+    "id": 70,
+    "action": "Set cursor after first churn"
+  },
+  {
+    "id": 71,
+    "action": "Verify DTE points ETG000017"
+  },
+  {
+    "id": 72,
+    "action": "Set cursor after second churn"
+  },
+  {
+    "id": 73,
+    "action": "Verify DTE points IP_ROUTING fallback"
+  },
+  {
+    "id": 74,
+    "action": "Select failed churn event"
+  },
+  {
+    "id": 75,
+    "action": "Compare no-effects event and resource state"
+  },
+  {
+    "id": 76,
+    "action": "Move cursor before failure"
+  },
+  {
+    "id": 77,
+    "action": "Move cursor after failure"
+  },
+  {
+    "id": 78,
+    "action": "Verify failed operation preserves next hop"
+  },
+  {
+    "id": 79,
+    "action": "Select primary ETE resource"
+  },
+  {
+    "id": 80,
+    "action": "Inspect ETE/ES correlation at failure"
+  },
+  {
+    "id": 81,
+    "action": "Select backup ETE resource"
+  },
+  {
+    "id": 82,
+    "action": "Inspect backup relationship at failure"
+  },
+  {
+    "id": 83,
+    "action": "Compare source record and normalized event"
+  },
+  {
+    "id": 84,
+    "action": "Reveal event in timeline"
+  },
+  {
+    "id": 85,
+    "action": "Jump from timeline to log"
+  },
+  {
+    "id": 86,
+    "action": "Return log to timeline"
+  },
+  {
+    "id": 87,
+    "action": "Change graph perspective at same cursor"
+  },
+  {
+    "id": 88,
+    "action": "Restore observed perspective"
+  },
+  {
+    "id": 89,
+    "action": "Zoom into churn interval"
+  },
+  {
+    "id": 90,
+    "action": "Expand same resource in a second tree branch"
+  },
+  {
+    "id": 91,
+    "action": "Collapse and re-expand relationship branch"
+  },
+  {
+    "id": 92,
+    "action": "Search resource while preserving cursor"
+  },
+  {
+    "id": 93,
+    "action": "Clear resource search"
+  },
+  {
+    "id": 94,
+    "action": "Select another node then return"
+  },
+  {
+    "id": 95,
+    "action": "Change temporal range and verify correlation scope"
+  },
+  {
+    "id": 96,
+    "action": "Reopen correlation detail after range change"
+  },
+  {
+    "id": 97,
+    "action": "Repeat early-late-early cursor sequence"
+  },
+  {
+    "id": 98,
+    "action": "Compare cursor, details and graph after repeat"
+  },
+  {
+    "id": 99,
+    "action": "Browser reload preserves or consistently resets state"
+  },
+  {
+    "id": 100,
+    "action": "Final historical correlation inspection"
+  }
+]

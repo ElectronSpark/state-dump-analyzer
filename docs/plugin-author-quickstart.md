@@ -125,3 +125,7 @@ metadata describes input and evidence quality; core reports configured host
 services. Optional topology and forwarding hooks are introduced in the
 [author guide](plugin-author-guide.md#4-know-which-hooks-are-optional), with focused tests for
 each boundary.
+When adding historical topology or route capabilities, use the
+[temporal route checks](plugin-api-validation.md#historical-route-and-correlation-checks).
+The generated demo exercises carrier down/restore and route-validity boundaries;
+the small status parser does not need another hook for these core checks.

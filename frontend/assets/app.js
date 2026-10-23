@@ -7333,25 +7333,60 @@ function correlationHoverCard() {
 function showCorrelationHover(anchor, html, { pinned = false } = {}) {
   window.clearTimeout(showCorrelationHover.closeTimer);
   const card = correlationHoverCard();
+  if (!card.hidden && showCorrelationHover.anchor === anchor && card.dataset.pinned === "true" && !pinned) {
+    positionCorrelationHover();
+    return;
+  }
+  showCorrelationHover.anchor = anchor;
   card.innerHTML = html;
   card.hidden = false;
   card.dataset.pinned = String(pinned);
+  positionCorrelationHover();
+}
+
+function positionCorrelationHover() {
+  const card = byId("correlation-hover");
+  if (!card || card.hidden) return;
+  const anchor = showCorrelationHover.anchor;
+  if (!anchor?.isConnected) return closeCorrelationHover();
+  const bounds = anchor.getBoundingClientRect();
+  const top = Math.max(12, document.querySelector(".topbar")?.getBoundingClientRect().bottom || 0);
+  let left = 0, right = window.innerWidth, bottom = window.innerHeight, visibleTop = top;
+  const clip = anchor.closest(".graph-stage, .table-wrap, .correlation-rows");
+  if (clip) {
+    const viewport = clip.getBoundingClientRect();
+    left = Math.max(left, viewport.left + clip.clientLeft);
+    right = Math.min(right, viewport.left + clip.clientLeft + clip.clientWidth);
+    visibleTop = Math.max(visibleTop, viewport.top + clip.clientTop);
+    bottom = Math.min(bottom, viewport.top + clip.clientTop + clip.clientHeight);
+  }
+  const rect = {
+    left: Math.max(bounds.left, left), right: Math.min(bounds.right, right),
+    top: Math.max(bounds.top, visibleTop), bottom: Math.min(bounds.bottom, bottom),
+  };
+  // A visible horizontal/vertical SVG edge has a zero-height/width box;
+  // its stroke is still an interactive anchor inside the scrollport.
+  if (bounds.right <= left || bounds.left >= right || bounds.bottom <= visibleTop || bounds.top >= bottom
+      || (bounds.left === bounds.right && bounds.top === bounds.bottom)) return closeCorrelationHover();
+  rect.width = rect.right - rect.left;
+  rect.height = rect.bottom - rect.top;
   card.style.width = `${Math.min(440, window.innerWidth - 24)}px`;
   card.style.maxHeight = "";
-  const rect = anchor.getBoundingClientRect();
   const width = card.getBoundingClientRect().width;
-  const height = Math.min(430, card.scrollHeight || 250);
   const margin = 12;
+  const availableHeight = Math.max(0, window.innerHeight - top - margin);
+  const height = Math.min(430, availableHeight, card.scrollHeight || 250);
+  if (availableHeight < 430) card.style.maxHeight = `${availableHeight}px`;
   const gap = 8;
   const clampLeft = (value) => Math.max(margin, Math.min(window.innerWidth - width - margin, value));
-  const clampTop = (value) => Math.max(margin, Math.min(window.innerHeight - height - margin, value));
+  const clampTop = (value) => Math.max(top, Math.min(window.innerHeight - height - margin, value));
   const centeredLeft = clampLeft(rect.left + rect.width / 2 - width / 2);
   const belowTop = rect.bottom + gap;
   const aboveTop = rect.top - height - gap;
   if (belowTop + height <= window.innerHeight - margin) {
     card.style.left = `${centeredLeft}px`;
     card.style.top = `${belowTop}px`;
-  } else if (aboveTop >= margin) {
+  } else if (aboveTop >= top) {
     card.style.left = `${centeredLeft}px`;
     card.style.top = `${aboveTop}px`;
   } else if (rect.right + gap + width <= window.innerWidth - margin) {
@@ -7363,25 +7398,23 @@ function showCorrelationHover(anchor, html, { pinned = false } = {}) {
   } else {
     // In a narrow viewport, scroll the card within the available vertical
     // space instead of covering the control that opened it.
-    const aboveSpace = Math.max(0, rect.top - gap - margin);
+    const aboveSpace = Math.max(0, rect.top - gap - top);
     const belowSpace = Math.max(0, window.innerHeight - margin - belowTop);
     card.style.left = `${centeredLeft}px`;
     card.style.maxHeight = `${Math.max(aboveSpace, belowSpace)}px`;
-    card.style.top = `${aboveSpace > belowSpace ? margin : belowTop}px`;
+    card.style.top = `${aboveSpace > belowSpace ? top : belowTop}px`;
   }
 }
 
 function scheduleCorrelationHoverClose() {
   window.clearTimeout(showCorrelationHover.closeTimer);
   if (byId("correlation-hover")?.dataset.pinned === "true") return;
-  showCorrelationHover.closeTimer = window.setTimeout(() => {
-    const card = byId("correlation-hover");
-    if (card) card.hidden = true;
-  }, 320);
+  showCorrelationHover.closeTimer = window.setTimeout(closeCorrelationHover, 320);
 }
 
 function closeCorrelationHover() {
   window.clearTimeout(showCorrelationHover.closeTimer);
+  showCorrelationHover.anchor = null;
   const card = byId("correlation-hover");
   if (card) {
     card.dataset.pinned = "false";
@@ -12501,10 +12534,12 @@ function bindControls() {
   });
   document.addEventListener("scroll", (event) => {
     if (!byId("timeline-hover").contains(event.target)) positionHover();
+    if (!byId("correlation-hover")?.contains(event.target)) positionCorrelationHover();
   }, { capture: true, passive: true });
   window.addEventListener("resize", () => {
     closeTimelineContextMenu();
     positionHover();
+    positionCorrelationHover();
     window.clearTimeout(bindControls.timelineResizeTimer);
     bindControls.timelineResizeTimer = window.setTimeout(() => {
       if (state.dataset && timelinePhysicalTrackWidth() !== state.trackWidth) renderTimeline();

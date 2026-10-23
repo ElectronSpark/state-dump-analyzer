@@ -2752,6 +2752,13 @@ server path executes it until that orchestration is explicitly advertised.
 
 ### Cross-node trace contribution contract
 
+Historical route evidence must be valid for the frozen member basis, including
+its declared clock uncertainty. Table publication and direct candidate execution
+must enforce the same validity; a later observation cannot establish an earlier
+route merely because its static path still connects the nodes. The generated
+adapter's exercised row/decision rules are specified in
+[federated route-table rows](api-contract.md#55-federated-route-table-rows).
+
 A node plug-in contributes only node-local forwarding semantics through its
 projected IR. For a frozen `WorldBasis`, ingress VRF/destination, declared
 status perspective, and hard candidate/depth limits, the core performs LPM and

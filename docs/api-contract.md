@@ -3941,6 +3941,15 @@ POST /v1/topology-assemblies/{assembly_id}/routes/tables/query
 ```
 
 It returns bounded, plug-in-owned route rows under the frozen assembly context.
+Temporal validity is evaluated at each member's resolved native-time interval,
+including clock uncertainty. A bounded row must cover that whole interval:
+the start is inclusive and the end exclusive. Future, expired, boundary-crossing,
+or unresolved bounded evidence cannot establish historical reachability. The
+generated-archive adapter uses explicit `valid_from_ns` when supplied, otherwise
+the row's `observed_at_ns`; `valid_to_ns` remains optional. It applies the same
+gate to direct trace decisions and their route correlations, so omitting a row
+from a table cannot be bypassed by sending its trace request directly. A trace
+without temporally valid decisions retains an unresolved result.
 Rows that name an executable generated case carry an exact trace request.
 Inventory-only rows, including a generated row whose `scenario_id` is null,
 remain visible but return:

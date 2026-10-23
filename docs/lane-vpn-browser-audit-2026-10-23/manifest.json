@@ -1,0 +1,76 @@
+{
+  "audited_commit": "f8f5de77a5124a12317f9e71d23b4a5f7562df25",
+  "archive": "evidence.zip",
+  "entries": [
+    {
+      "file": "console-lane.json",
+      "bytes": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "file": "console-vpn.json",
+      "bytes": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "file": "perf-after.json",
+      "bytes": 155,
+      "sha256": "7eb9e1205e2a91a20617fd13a41704679970f987ed6626b63b6a1ea2dc088c68"
+    },
+    {
+      "file": "perf-before.json",
+      "bytes": 156,
+      "sha256": "5ea8d1fbef5a89111503972b7fc6ae20aa9f3a64e1a99be44680cc3879fbfc1d"
+    },
+    {
+      "file": "transit-loaded.json",
+      "bytes": 155,
+      "sha256": "b84bb9453df23cceb20f23e948b7a36c6606fdc0f2d8fec917958abd091fe879"
+    },
+    {
+      "file": "transit-loading.json",
+      "bytes": 154,
+      "sha256": "b08e7373fa518ec41e7d63e6a280d063cc089768b678f48fa1977bc7df06da33"
+    },
+    {
+      "file": "V04-context-scroll.png",
+      "bytes": 101613,
+      "sha256": "459f4ddef1723149a69278191f6f9c5b8b7251f751ea669e3c9aaa30c114a038"
+    },
+    {
+      "file": "V06-detached-context.png",
+      "bytes": 97683,
+      "sha256": "01765b78fb9c3f1628ca30e132e101e590ff609ad979d06f0b9f998059ca019d"
+    },
+    {
+      "file": "V17-popup-reentry.png",
+      "bytes": 123786,
+      "sha256": "b6d7d6bc44012d221497601d6cd923f70d6999dcb63ccc9eb0b33165c638b51e"
+    },
+    {
+      "file": "V25-rapid-open.png",
+      "bytes": 104634,
+      "sha256": "5042dbed6cbdda7ad58f1a7573a37f3eb024fa6949c39c18150f9be0dcbce751"
+    },
+    {
+      "file": "V26-rapid-keyboard-loss.png",
+      "bytes": 98706,
+      "sha256": "813615215371294320ff2bb4c8c14a0aa807526c9eee78309d13b53daf6b0666"
+    },
+    {
+      "file": "V27-restored-vpn.png",
+      "bytes": 125494,
+      "sha256": "f51ad0ac9de278094bafd6c37aba5a5bc09d75521d2b1ecc0a0a1340bfbaad51"
+    },
+    {
+      "file": "X01-transit-loading.png",
+      "bytes": 110152,
+      "sha256": "a4609dbeecfaf0f70e85b3e5ec41f865d8bc113f326abaf018f158373832d10e"
+    },
+    {
+      "file": "X04-before-reload.png",
+      "bytes": 115136,
+      "sha256": "a9759784c4e10a0d3d56f51a700551482350cd95b3c339397952e449a9ca37c8"
+    }
+  ]
+}

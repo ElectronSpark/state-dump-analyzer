@@ -172,7 +172,7 @@ test('trace rendering preserves pending and unavailable resolver messages', () =
     return elements.get(id);
   };
   const deps = { state, byId, document: { querySelector: () => ({ hidden: false }) }, escapeHtml: (value) => String(value).replaceAll('<', '&lt;'),
-    renderDirectionTabs() {}, renderRouteSeed() {}, updateRouteViewChrome() {}, renderRouteOutcome() {}, renderRoutePacketEvolution() {},
+    renderDirectionTabs() {}, renderRouteSeed() {}, updateRouteViewChrome() {}, renderRoutePresentations() {}, renderRouteOutcome() {}, renderRoutePacketEvolution() {},
   };
   const render = new Function(...Object.keys(deps), `${extract('routeCapabilityEmptyMarkup')}\n${extract('renderRouteTrace')}\nreturn renderRouteTrace;`)(...Object.values(deps));
   render();

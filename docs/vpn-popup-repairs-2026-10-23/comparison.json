@@ -1,0 +1,449 @@
+{
+  "method": "Final quiet fresh-process and fresh-search-cache 52-phase Windows Python workload. Historical comparison; OS cache not flushed. Browser/backend left idle during run. It does not measure browser renderer memory or attribute timing differences to frontend repairs.",
+  "baseline_result": ".runtime\\audit-repairs-2026-10-23\\performance\\after-1m\\result.json",
+  "after_result": ".runtime\\vpn-popup-repairs-2026-10-23\\after-1m-quiet\\result.json",
+  "returncodes": [
+    0,
+    0
+  ],
+  "stop_reasons": [
+    null,
+    null
+  ],
+  "phase_count": 52,
+  "phase_sequence_equal": true,
+  "phase_results_equal": true,
+  "page_hash_count": 35,
+  "page_hashes_equal": true,
+  "invariants_equal": {
+    "search_before": true,
+    "returned_search_before": true,
+    "cache_retirement": true,
+    "shared_search_cache": true,
+    "validation_cache": true
+  },
+  "fixture": {
+    "path": "demo\\fixtures\\router-state-lab-algorithms-2026-10-02.tgz",
+    "bytes": 286496584,
+    "sha256": "4cea20db78aa3fede9dc79a89a9277c5a9a72905fbff76a5f8436efd1c4aec30",
+    "matches_documented_fixture": true
+  },
+  "core_source_comparison": {
+    "file_count": 108,
+    "exact_bytes_equal_count": 7,
+    "all_newline_normalized_equal": false,
+    "normalized_differences": [
+      "src/router_dump_analyzer/multi_node_route.py"
+    ],
+    "note": "Historical harness used after-tree snapshot. New run uses working tree; check source hashes separately from newline-normalized text."
+  },
+  "baseline": {
+    "loaded_rss_gib": 2.1748046875,
+    "peak_rss_gib": 2.2523727416992188,
+    "peak_private_commit_gib": 2.2469635009765625,
+    "phase_cpu_seconds": 178.734375,
+    "elapsed_seconds": 183.9529999999795,
+    "sidecar_bytes": 75038720
+  },
+  "after": {
+    "loaded_rss_gib": 2.175647735595703,
+    "peak_rss_gib": 2.254413604736328,
+    "peak_private_commit_gib": 2.249591827392578,
+    "phase_cpu_seconds": 168.265625,
+    "elapsed_seconds": 172.98400000005495,
+    "sidecar_bytes": 75038720
+  },
+  "delta": {
+    "loaded_rss_gib": 0.000843048095703125,
+    "peak_rss_gib": 0.002040863037109375,
+    "peak_private_commit_gib": 0.002628326416015625,
+    "phase_cpu_seconds": -10.46875,
+    "elapsed_seconds": -10.968999999924563,
+    "sidecar_bytes": 0
+  },
+  "delta_percent": {
+    "loaded_rss_gib": 0.03876431297709093,
+    "peak_rss_gib": 0.0906094714842709,
+    "peak_private_commit_gib": 0.11697236803682731,
+    "phase_cpu_seconds": -5.8571553457470005,
+    "elapsed_seconds": -5.962936184745981,
+    "sidecar_bytes": 0.0
+  },
+  "minimum_host_available_gib": 30.459335327148438,
+  "phase_measurements": [
+    {
+      "phase_occurrence": "runtime_import#1",
+      "baseline_wall_seconds": 1.767243199981749,
+      "after_wall_seconds": 1.6475239000283182,
+      "baseline_cpu_seconds": 1.65625,
+      "after_cpu_seconds": 1.5
+    },
+    {
+      "phase_occurrence": "runtime_open#1",
+      "baseline_wall_seconds": 3.5199918784201145e-05,
+      "after_wall_seconds": 2.9399991035461426e-05,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "core_service_setup#1",
+      "baseline_wall_seconds": 3.360002301633358e-05,
+      "after_wall_seconds": 3.0400115065276623e-05,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "archive_preparation#1",
+      "baseline_wall_seconds": 19.207873999956064,
+      "after_wall_seconds": 19.232684200047515,
+      "baseline_cpu_seconds": 18.59375,
+      "after_cpu_seconds": 18.78125
+    },
+    {
+      "phase_occurrence": "node_a_cold_load#1",
+      "baseline_wall_seconds": 32.938270100043155,
+      "after_wall_seconds": 30.419668199960142,
+      "baseline_cpu_seconds": 32.3125,
+      "after_cpu_seconds": 29.453125
+    },
+    {
+      "phase_occurrence": "node_a_bootstrap#1",
+      "baseline_wall_seconds": 0.04803179996088147,
+      "after_wall_seconds": 0.04599830007646233,
+      "baseline_cpu_seconds": 0.046875,
+      "after_cpu_seconds": 0.046875
+    },
+    {
+      "phase_occurrence": "node_a_query_setup#1",
+      "baseline_wall_seconds": 2.1699932403862476e-05,
+      "after_wall_seconds": 2.0900042727589607e-05,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "first_search_failure#1",
+      "baseline_wall_seconds": 44.886356199975125,
+      "after_wall_seconds": 43.158944500028156,
+      "baseline_cpu_seconds": 43.671875,
+      "after_cpu_seconds": 42.4375
+    },
+    {
+      "phase_occurrence": "warm_same_search_failure#1",
+      "baseline_wall_seconds": 0.002347299945540726,
+      "after_wall_seconds": 0.002190600032918155,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "warm_other_search_success#1",
+      "baseline_wall_seconds": 2.2122542000142857,
+      "after_wall_seconds": 2.220055199926719,
+      "baseline_cpu_seconds": 2.171875,
+      "after_cpu_seconds": 2.171875
+    },
+    {
+      "phase_occurrence": "dense_search_1#1",
+      "baseline_wall_seconds": 0.005219900049269199,
+      "after_wall_seconds": 0.005161300068721175,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "dense_search_2#1",
+      "baseline_wall_seconds": 0.004837699932977557,
+      "after_wall_seconds": 0.004471699940040708,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.015625
+    },
+    {
+      "phase_occurrence": "dense_search_3#1",
+      "baseline_wall_seconds": 0.004904800094664097,
+      "after_wall_seconds": 0.004451299901120365,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "dense_search_4#1",
+      "baseline_wall_seconds": 0.0054345999378710985,
+      "after_wall_seconds": 0.0055541000328958035,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.015625
+    },
+    {
+      "phase_occurrence": "dense_search_5#1",
+      "baseline_wall_seconds": 0.005298599950037897,
+      "after_wall_seconds": 0.004829599987715483,
+      "baseline_cpu_seconds": 0.015625,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "refined_search_fail#1",
+      "baseline_wall_seconds": 2.025097099947743,
+      "after_wall_seconds": 2.01667769998312,
+      "baseline_cpu_seconds": 2.0,
+      "after_cpu_seconds": 1.96875
+    },
+    {
+      "phase_occurrence": "refined_search_failu#1",
+      "baseline_wall_seconds": 2.692062799935229,
+      "after_wall_seconds": 2.617710300022736,
+      "baseline_cpu_seconds": 2.625,
+      "after_cpu_seconds": 2.515625
+    },
+    {
+      "phase_occurrence": "refined_search_failure#1",
+      "baseline_wall_seconds": 0.0022082000505179167,
+      "after_wall_seconds": 0.002097400021739304,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "refined_search_failure missing-literal-probe#1",
+      "baseline_wall_seconds": 0.4798478999873623,
+      "after_wall_seconds": 0.4720984000014141,
+      "baseline_cpu_seconds": 0.484375,
+      "after_cpu_seconds": 0.4375
+    },
+    {
+      "phase_occurrence": "layer_page_control-plane_0#1",
+      "baseline_wall_seconds": 2.125579299987294,
+      "after_wall_seconds": 2.0652740999357775,
+      "baseline_cpu_seconds": 2.09375,
+      "after_cpu_seconds": 2.0
+    },
+    {
+      "phase_occurrence": "layer_page_control-plane_100#1",
+      "baseline_wall_seconds": 0.004871599958278239,
+      "after_wall_seconds": 0.0049202999798581,
+      "baseline_cpu_seconds": 0.015625,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "layer_page_control-plane_1000#1",
+      "baseline_wall_seconds": 0.0038038999773561954,
+      "after_wall_seconds": 0.0038768999511376023,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "layer_page_control-plane_0#2",
+      "baseline_wall_seconds": 0.004135499941185117,
+      "after_wall_seconds": 0.0036163999466225505,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "layer_page_control-plane_100#2",
+      "baseline_wall_seconds": 0.004268399905413389,
+      "after_wall_seconds": 0.003821199992671609,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.015625
+    },
+    {
+      "phase_occurrence": "layer_page_control-plane_1000#2",
+      "baseline_wall_seconds": 0.0036847000010311604,
+      "after_wall_seconds": 0.004084400017745793,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "zoom_density_1#1",
+      "baseline_wall_seconds": 0.009039000025950372,
+      "after_wall_seconds": 0.009219900006428361,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.015625
+    },
+    {
+      "phase_occurrence": "zoom_density_2#1",
+      "baseline_wall_seconds": 0.0012264000251889229,
+      "after_wall_seconds": 0.0011812999146059155,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "zoom_density_3#1",
+      "baseline_wall_seconds": 0.0012101000174880028,
+      "after_wall_seconds": 0.0011879000812768936,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "normalized_locate_1#1",
+      "baseline_wall_seconds": 0.004978000069968402,
+      "after_wall_seconds": 0.0047203999711200595,
+      "baseline_cpu_seconds": 0.015625,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "normalized_locate_2#1",
+      "baseline_wall_seconds": 0.004546900046989322,
+      "after_wall_seconds": 0.006092400057241321,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.015625
+    },
+    {
+      "phase_occurrence": "ctf_locate_1#1",
+      "baseline_wall_seconds": 0.005249600042589009,
+      "after_wall_seconds": 0.005267800064757466,
+      "baseline_cpu_seconds": 0.015625,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "ctf_locate_2#1",
+      "baseline_wall_seconds": 0.004967299988493323,
+      "after_wall_seconds": 0.005527399946004152,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "merged_locate_1#1",
+      "baseline_wall_seconds": 0.016040699905715883,
+      "after_wall_seconds": 0.014470400055870414,
+      "baseline_cpu_seconds": 0.015625,
+      "after_cpu_seconds": 0.015625
+    },
+    {
+      "phase_occurrence": "merged_locate_2#1",
+      "baseline_wall_seconds": 0.01452419999986887,
+      "after_wall_seconds": 0.014064099988900125,
+      "baseline_cpu_seconds": 0.015625,
+      "after_cpu_seconds": 0.015625
+    },
+    {
+      "phase_occurrence": "merged_target_page_1#1",
+      "baseline_wall_seconds": 0.013368300045840442,
+      "after_wall_seconds": 0.012328499928116798,
+      "baseline_cpu_seconds": 0.015625,
+      "after_cpu_seconds": 0.015625
+    },
+    {
+      "phase_occurrence": "merged_target_page_2#1",
+      "baseline_wall_seconds": 0.01502360007725656,
+      "after_wall_seconds": 0.012140900013037026,
+      "baseline_cpu_seconds": 0.015625,
+      "after_cpu_seconds": 0.015625
+    },
+    {
+      "phase_occurrence": "merged_deep_page_1#1",
+      "baseline_wall_seconds": 0.017541600042022765,
+      "after_wall_seconds": 0.013281499966979027,
+      "baseline_cpu_seconds": 0.015625,
+      "after_cpu_seconds": 0.015625
+    },
+    {
+      "phase_occurrence": "merged_deep_page_2#1",
+      "baseline_wall_seconds": 0.015047599910758436,
+      "after_wall_seconds": 0.011652200017124414,
+      "baseline_cpu_seconds": 0.015625,
+      "after_cpu_seconds": 0.015625
+    },
+    {
+      "phase_occurrence": "merged_deep_locate_1#1",
+      "baseline_wall_seconds": 0.01616460003424436,
+      "after_wall_seconds": 0.015828299918211997,
+      "baseline_cpu_seconds": 0.015625,
+      "after_cpu_seconds": 0.015625
+    },
+    {
+      "phase_occurrence": "merged_deep_locate_2#1",
+      "baseline_wall_seconds": 0.019076599972322583,
+      "after_wall_seconds": 0.01539830002002418,
+      "baseline_cpu_seconds": 0.015625,
+      "after_cpu_seconds": 0.015625
+    },
+    {
+      "phase_occurrence": "release_a_before_switch#1",
+      "baseline_wall_seconds": 2.414323000004515,
+      "after_wall_seconds": 1.9963481999002397,
+      "baseline_cpu_seconds": 2.390625,
+      "after_cpu_seconds": 1.953125
+    },
+    {
+      "phase_occurrence": "switch_to_b_cold_load#1",
+      "baseline_wall_seconds": 32.74107559991535,
+      "after_wall_seconds": 30.022404000046663,
+      "baseline_cpu_seconds": 31.65625,
+      "after_cpu_seconds": 29.3125
+    },
+    {
+      "phase_occurrence": "release_b_before_return#1",
+      "baseline_wall_seconds": 2.5515989999985322,
+      "after_wall_seconds": 2.1224108000751585,
+      "baseline_cpu_seconds": 2.46875,
+      "after_cpu_seconds": 2.109375
+    },
+    {
+      "phase_occurrence": "return_to_a_load#1",
+      "baseline_wall_seconds": 32.72974650003016,
+      "after_wall_seconds": 30.128350600018166,
+      "baseline_cpu_seconds": 32.109375,
+      "after_cpu_seconds": 29.5625
+    },
+    {
+      "phase_occurrence": "returned_a_query_setup#1",
+      "baseline_wall_seconds": 1.8000020645558834e-05,
+      "after_wall_seconds": 1.9600032828748226e-05,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "return_to_a_search_sidecar#1",
+      "baseline_wall_seconds": 0.11745629995130002,
+      "after_wall_seconds": 0.1129258000291884,
+      "baseline_cpu_seconds": 0.078125,
+      "after_cpu_seconds": 0.109375
+    },
+    {
+      "phase_occurrence": "return_to_a_search_success#1",
+      "baseline_wall_seconds": 0.007658999995328486,
+      "after_wall_seconds": 0.005643300013616681,
+      "baseline_cpu_seconds": 0.015625,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "return_to_a_search_fail#1",
+      "baseline_wall_seconds": 0.004177600028924644,
+      "after_wall_seconds": 0.004653700045309961,
+      "baseline_cpu_seconds": 0.0,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "return_to_a_search_absent#1",
+      "baseline_wall_seconds": 0.0012487999629229307,
+      "after_wall_seconds": 0.0012694000033661723,
+      "baseline_cpu_seconds": 0.015625,
+      "after_cpu_seconds": 0.0
+    },
+    {
+      "phase_occurrence": "return_to_a_search_new_interface#1",
+      "baseline_wall_seconds": 2.0465612000552937,
+      "after_wall_seconds": 1.9894431000575423,
+      "baseline_cpu_seconds": 2.015625,
+      "after_cpu_seconds": 1.875
+    },
+    {
+      "phase_occurrence": "runtime_close#1",
+      "baseline_wall_seconds": 1.9979279999388382,
+      "after_wall_seconds": 1.7350103000644594,
+      "baseline_cpu_seconds": 2.0,
+      "after_cpu_seconds": 1.703125
+    },
+    {
+      "phase_occurrence": "final_gc#1",
+      "baseline_wall_seconds": 0.14323129993863404,
+      "after_wall_seconds": 0.11792160000186414,
+      "baseline_cpu_seconds": 0.140625,
+      "after_cpu_seconds": 0.125
+    }
+  ],
+  "application_source_comparison": {
+    "file_count": 149,
+    "exact_bytes_equal_count": 13,
+    "normalized_differences": [
+      "src/router_dump_analyzer/multi_node_route.py",
+      "demo/rsl_demo_plugin/route_policy.py"
+    ],
+    "qualification": "Historical baseline predates the committed route-step ownership correction in multi_node_route.py and service-description wording change in demo route_policy.py. Current task changes only frontend/skills/docs. Historical timing comparison cannot isolate a frontend effect."
+  },
+  "measured_core_source_text_equal": true
+}

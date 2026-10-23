@@ -1,0 +1,86 @@
+{
+  "base_commit": "f8f5de77a5124a12317f9e71d23b4a5f7562df25",
+  "archive": "evidence.zip",
+  "entries": [
+    {
+      "file": "browser/LV01-dismissed.png",
+      "bytes": 90802,
+      "sha256": "8e1e9a3245294b1a165c57c0b73955eadb938f37522fee3fe888fa31f3ca06b8"
+    },
+    {
+      "file": "browser/LV02-preserved.png",
+      "bytes": 123544,
+      "sha256": "212476a6c262e3fcff6d88e544ce95522dd6b70cb5c59c333f671c0c68b9aef1"
+    },
+    {
+      "file": "browser/LV03-rapid.png",
+      "bytes": 107133,
+      "sha256": "c35adb13cc8450e211b64f65ede6e83b3654bc735d1354db98f2b6a419176c9e"
+    },
+    {
+      "file": "browser/console.json",
+      "bytes": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "file": "browser/ledger.json",
+      "bytes": 5532,
+      "sha256": "6cd905bfc63270521bfe4b0c6539bab43e3822c41012eeabe2fed05861f04d29"
+    },
+    {
+      "file": "browser/restored-vpn.png",
+      "bytes": 126132,
+      "sha256": "a4558aaed370a736fd5302f24d6c5ecbf0ee672c5ee8b1d88edc41f0078e9456"
+    },
+    {
+      "file": "measurements/baseline-result.json",
+      "bytes": 71078,
+      "sha256": "65a0cdf5a794ab712127fcac53e9d34f946861cc59a968abacfd49852450342a"
+    },
+    {
+      "file": "measurements/child.jsonl",
+      "bytes": 46256,
+      "sha256": "2d6e3281b943992295149dfd867c7f51229a84a3d33598b20974f21b01863dee"
+    },
+    {
+      "file": "measurements/comparison.json",
+      "bytes": 16022,
+      "sha256": "263acee541a6ccf805b013b55ecf70ef2022f29d0093dcb6794fada7fdd5bd81"
+    },
+    {
+      "file": "measurements/measurement.log",
+      "bytes": 43162,
+      "sha256": "5f4188d565bea6841cb86930621772c094d53337ebc76d46717a8020060423ac"
+    },
+    {
+      "file": "measurements/memory.jsonl",
+      "bytes": 458638,
+      "sha256": "2864931deba1319dd5c373cc2bb2dda71b0405999061714c12cfaf9bf678adb9"
+    },
+    {
+      "file": "measurements/result.json",
+      "bytes": 71163,
+      "sha256": "3f545c619707fa5199fa3227d6d4e6395e0f54c3983c7cbdc58cbcedccacefbb"
+    },
+    {
+      "file": "measurements/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "file": "scripts/measure.py",
+      "bytes": 18298,
+      "sha256": "05a586a092289fe65a10462bba61e79f988bc8588d121bad727df1eed752a92a"
+    },
+    {
+      "file": "tests/frontend-check.log",
+      "bytes": 129682,
+      "sha256": "373c0355f0ea1dbfa9228ee0b186527c615ee7b31674fc7b0cba0eb1d40cfde9"
+    },
+    {
+      "file": "tests/regressions-before.log",
+      "bytes": 8213,
+      "sha256": "fb442078314524e57e2e79bb979425858ec466f0052536d8a1b376ea9c8b3246"
+    }
+  ]
+}

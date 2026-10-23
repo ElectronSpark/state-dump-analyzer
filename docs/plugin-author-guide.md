@@ -2055,6 +2055,13 @@ This is not yet a production coordinator that discovers and calls
 [Packet state, transitions, and MTU](plugin-contract.md#packet-state-transitions-and-mtu)
 for the normative rules.
 
+For historical route providers, also run the
+[temporal route checks](plugin-api-validation.md#historical-route-and-correlation-checks).
+Use the current reconstructed world for typed links; do not freeze carrier state
+in constructor claims. Route-table rows and executable decisions must agree on
+their native validity and clock bounds, including when a trace is requested
+without first selecting a table row.
+
 ### Forwarding loops and ingress-dependent policy
 
 This is an optional advanced forwarding capability; the minimal example does
