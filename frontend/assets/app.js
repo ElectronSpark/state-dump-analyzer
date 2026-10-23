@@ -7519,21 +7519,29 @@ function renderCorrelationList(graph) {
     ? `<div class="correlation-list-more"><span>Showing ${state.correlationListLimit.toLocaleString()} of ${edges.length.toLocaleString()}</span><button type="button" data-correlation-show-more>Show ${Math.min(CORRELATION_LIST_PAGE_SIZE, edges.length - state.correlationListLimit).toLocaleString()} more</button></div>`
     : "";
   const renderGroup = (kind, title, description, edges) => `<details class="correlation-group ${kind}" open>
-    <summary><span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(description)}</small></span><b>${edges.length}</b></summary>
-    <div class="correlation-items">${renderItems(edges, kind) || '<p>No resources in this direction at the selected time.</p>'}${moreControl(edges)}</div>
+    <summary><span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(description)} in this response</small></span><b>${edges.length}</b></summary>
+    <div class="correlation-items">${renderItems(edges, kind) || '<p>No relationships returned in this direction at the selected time.</p>'}${moreControl(edges)}</div>
   </details>`;
 
   if (!state.selectedResourceId) {
-    container.innerHTML = `<div class="correlation-heading"><strong>Active relationships</strong><span>${graph.edges.length} at ${escapeHtml(formatOffset(graphTimeNs))}</span></div><div class="correlation-rows">${graph.edges.slice(0, state.correlationListLimit).map((edge) => { const presentation = relationshipPresentation(edge.type); return `<div><button type="button" data-resource-id="${escapeHtml(edge.source)}">${escapeHtml(resourceName(edge.source))}</button><span tabindex="0" data-correlation-edge-id="${escapeHtml(edge.id)}">${escapeHtml(presentation.displayLabel)} ${presentation.directed === true ? "→" : "—"}</span><button type="button" data-resource-id="${escapeHtml(edge.target)}">${escapeHtml(resourceName(edge.target))}</button></div>`; }).join("") || '<p>No active relationship is visible at this time.</p>'}${moreControl(graph.edges)}</div>`;
+    container.innerHTML = `<div class="correlation-heading"><strong>Active relationships</strong><span>${graph.edges.length} returned at ${escapeHtml(formatOffset(graphTimeNs))}</span></div><div class="correlation-rows">${graph.edges.slice(0, state.correlationListLimit).map((edge) => { const presentation = relationshipPresentation(edge.type); return `<div><button type="button" data-resource-id="${escapeHtml(edge.source)}">${escapeHtml(resourceName(edge.source))}</button><span tabindex="0" data-correlation-edge-id="${escapeHtml(edge.id)}">${escapeHtml(presentation.displayLabel)} ${presentation.directed === true ? "→" : "—"}</span><button type="button" data-resource-id="${escapeHtml(edge.target)}">${escapeHtml(resourceName(edge.target))}</button></div>`; }).join("") || '<p>No active relationships returned at this time.</p>'}${moreControl(graph.edges)}</div>`;
   } else {
     const outgoing = graph.edges.filter((edge) => edge.source === state.selectedResourceId);
     const incoming = graph.edges.filter((edge) => edge.target === state.selectedResourceId);
-    container.innerHTML = `<div class="correlation-heading"><strong>Relationship index</strong><span>${outgoing.length + incoming.length} at ${escapeHtml(formatOffset(graphTimeNs))}</span></div>
+    const inactive = graph.query?.inactive_resource_ids?.includes(state.selectedResourceId);
+    const unknown = graph.query?.unknown_resource_ids?.includes(state.selectedResourceId);
+    const covered = nodes.has(state.selectedResourceId);
+    const coverageMessage = inactive
+      ? "The selected focus is outside its lifecycle at this moment."
+      : unknown ? "The selected focus is unknown to this revision."
+        : !covered ? `This response does not cover the selected focus.${state.graphShowFull ? " Choose Focus selected to query its relationships." : " Its relationships cannot be determined from this response."}` : "";
+    const count = inactive ? "0" : unknown ? "Unknown resource" : covered ? `${outgoing.length + incoming.length} returned` : "Not covered";
+    container.innerHTML = `<div class="correlation-heading"><strong>Relationship index</strong><span>${count} at ${escapeHtml(formatOffset(graphTimeNs))}</span></div>
       <div class="correlation-root"><span>Selected focus</span><strong>${escapeHtml(resourceName(state.selectedResourceId))}</strong><code>${escapeHtml(state.selectedResourceId)}</code></div>
-      <div class="correlation-groups">
+      ${coverageMessage ? `<p class="correlation-empty-message">${escapeHtml(coverageMessage)}</p>` : `<div class="correlation-groups">
         ${renderGroup("outgoing", "Declared source endpoints", "Selected resource is the source endpoint", outgoing)}
         ${renderGroup("incoming", "Declared target endpoints", "Selected resource is the target endpoint", incoming)}
-      </div>`;
+      </div>`}`;
   }
   container.querySelectorAll("details").forEach((item) => {
     const key = `${item.className}:${item.matches(".correlation-group") ? "" : item.querySelector("[data-correlation-edge-id]")?.dataset.correlationEdgeId}`;
@@ -7782,13 +7790,11 @@ function renderGraph() {
   if (!graph.nodes.length) {
     state.graphPinnedInspection = null;
     closeCorrelationHover();
-    stage.innerHTML = '<div class="empty-state">No correlated resources exist at this time.</div>';
+    stage.innerHTML = '<div class="empty-state">No correlated resources in this response.</div>';
     stage.style.minHeight = "220px";
     byId("graph-legend").innerHTML = "";
-    byId("graph-note").textContent = state.selectedResourceId
-      ? `The selected resource does not exist at ${formatOffset(graphTimeNs)}. Show the full graph to inspect other active resources.`
-      : `0 resources / 0 time-valid relationships / selected moment ${formatOffset(graphTimeNs)}.`;
-    byId("correlation-list").innerHTML = `<div class="correlation-heading"><strong>No active correlation</strong><span>${escapeHtml(formatOffset(graphTimeNs))}</span></div><p class="correlation-empty-message">${state.selectedResourceId ? "The selected focus is outside its lifecycle at this moment." : "No resource relationships are active at this moment."}</p>`;
+    byId("graph-note").textContent = `0 returned resources / 0 returned time-valid relationships / selected moment ${formatOffset(graphTimeNs)}.`;
+    renderCorrelationList(scoped);
     return;
   }
   const layout = graphLayout(graph);

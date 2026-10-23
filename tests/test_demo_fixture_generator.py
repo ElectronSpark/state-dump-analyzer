@@ -2391,6 +2391,8 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
             )
         ]
         continuations_by_route: dict[str, list[dict[str, object]]] = {}
+        clock_offsets = {node.node_id: node.clock_offset_ns for node in DEMO_NODES}
+        self.assertGreater(len(set(clock_offsets.values())), 1)
         for _, forwarding in projected.values():
             for row in forwarding:
                 if (
@@ -2425,6 +2427,10 @@ class DemoFixtureGeneratorTests(unittest.TestCase):
                 )
                 for index, item in enumerate(continuations):
                     continuation = item["continuation"]
+                    self.assertEqual(
+                        int(item["observed_at_ns"]) - clock_offsets[item["node_id"]],
+                        int(route["observed_at_ns"]) - clock_offsets[route["node_id"]],
+                    )
                     self.assertEqual(
                         continuation["path_id"],
                         route["path_id"],

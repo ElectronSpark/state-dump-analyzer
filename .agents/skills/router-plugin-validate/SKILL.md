@@ -195,6 +195,8 @@ typed into. Passive re-entry must preserve a pinned card's scroll and focus.
 Apply these checks to single-node correlation cards and route service-context
 strips as well as graph inspectors;
 direction or trace changes must still retire obsolete context.
+At narrow widths, hit-test adjacent controls with a service preview open;
+viewport containment alone does not establish that a pointer can reach them.
 Verify native keyboard activation after scrolling too.
 Start Enter/Space from timeline targets above and below the viewport, including
 an upward source-marker reveal and horizontal label occlusion. Check the settled
@@ -216,10 +218,15 @@ values with settled rows; consistent reset and retained filtering are both valid
 For historical route checks, compare row/decision validity and the actual traversed
 link with the applied per-node time and clock bounds. Test direct tracing as well
 as table-seeded tracing; hiding an invalid table row must not leave a trace bypass.
+Use unequal node clock offsets to check each executing hop's observation domain
+independently of its source-evidence attribution. Regenerate persisted fixture
+projections after changing their producer before validating the browser.
 Compare typed-link status with its local resource history through down, restore,
 and past-present-past queries. For resource correlations, distinguish instant
 edges from viewport-wide history and failed intent from applied state. Wait for
 both graph and table to settle; one completed panel does not establish the other.
+An omitted focus in a bounded or representative graph is not evidence of absent
+relationships. Compare broad/focused scope with active and inactive roots.
 For layered graphs, compare SVG and HTML coordinates and marker IDs in the live
 document; correct semantic output does not establish correct visible geometry.
 Cross-check node, edge, label and resolution-step highlights in both directions;

@@ -675,6 +675,12 @@ and return the pointer to the same service label: passive re-entry must retain
 popup scroll and external focus. Direction, path, and trace replacement must
 still clear obsolete service details, including reused presentation group IDs.
 
+Also check narrow width independently of short height. A preview can fit inside
+the viewport while covering its trigger or adjacent graph-mode controls. Hit-test
+the actual button center with the card open, compare pointer with Enter/Space,
+and repeat without the card. When neither side fits, validate vertical placement
+and internal scrolling without losing the existing clipping/focus behavior.
+
 ### Historical route and correlation checks
 
 For historical routes, compare the applied frozen member basis with each route
@@ -687,6 +693,13 @@ crosses the changed circuit; parallel routes involving both nodes are insufficie
 Single-node native cursor offsets and fabric UTC times can have different origins.
 Use exact timestamps and failed/stale events as controls. Graph and resource-table
 refreshes settle independently, so save both settled results before comparing them.
+Use unequal clock offsets to verify that each continuation's observation is in
+the executing node's domain, independently of its evidence owner's validity.
+Regenerate persisted projections after producer changes; changing code does not
+repair an already-generated archive. For bounded or representative correlations,
+an omitted focus means the response does not cover it, not that it has no edges.
+Compare full/focused scope, explicit inactive roots, and unknown roots without
+raising graph bounds to hide missing coverage.
 
 The generated adapter and core boundary are exercised by:
 

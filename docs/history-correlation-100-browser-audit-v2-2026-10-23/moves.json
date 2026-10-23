@@ -1,0 +1,1443 @@
+{
+  "audited_commit": "141836e649510e21c56d469d9c93de3cc18f11ce",
+  "move_count": 100,
+  "interpretation": "100 performed/attempted UI moves, not 100 independent passing tests. Superseded work and recovery remain explicit. Timings include tool overhead.",
+  "moves": [
+    {
+      "id": 1,
+      "action": "Reconstruct at UTC +601.006 s, just after PE-A row admission",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 838,
+      "recorded_at": "2026-10-23T17:31:06.639Z",
+      "snapshot": "move-001.txt",
+      "classification": "pending_capture",
+      "actual_outcome": "Reconstruction is still running at +601.006; the snapshot explicitly retains the previous +100 applied graph. Do not judge its old unresolved route as the new result.",
+      "evidence": [
+        "move-001.txt",
+        "move-002-settled.txt"
+      ]
+    },
+    {
+      "id": 2,
+      "action": "Trace existing blue VPN both directions at +601.006",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 2279,
+      "recorded_at": "2026-10-23T17:31:08.919Z",
+      "snapshot": "move-002.txt",
+      "classification": "confirmed_finding",
+      "actual_outcome": "Initial capture has no completed route outcome. Settled supplement at +601.006 shows A→B resolved and B→A unresolved; forward is admitted before B's genuine +601.009 uncertainty threshold.",
+      "evidence": [
+        "move-002.txt",
+        "move-002-settled.txt",
+        "finding-analysis.md"
+      ]
+    },
+    {
+      "id": 3,
+      "action": "Reconstruct at UTC +601.010 s, after all A/P1/B row uncertainty bounds",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 2276,
+      "recorded_at": "2026-10-23T17:31:38.338Z",
+      "snapshot": "move-003.txt",
+      "classification": "control",
+      "actual_outcome": "Applied absolute +601.010 context is visible; prior trace result was invalidated. This establishes the new basis, not a trace outcome.",
+      "evidence": [
+        "move-003.txt"
+      ]
+    },
+    {
+      "id": 4,
+      "action": "Trace blue VPN both directions at +601.010 s",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 4255,
+      "recorded_at": "2026-10-23T17:31:42.593Z",
+      "snapshot": "move-004.txt",
+      "classification": "confirmed_finding",
+      "actual_outcome": "At applied +601.010, forward A→B has one resolved path; return B→A is unresolved at terminal PE-A with route/forwarding evidence unavailable. This matches the copied native-clock defect.",
+      "evidence": [
+        "move-004.txt",
+        "finding-analysis.md"
+      ]
+    },
+    {
+      "id": 5,
+      "action": "Reconstruct at UTC +601.016 s, after suspect copied timestamp window",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 2384,
+      "recorded_at": "2026-10-23T17:31:59.076Z",
+      "snapshot": "move-005.txt",
+      "classification": "control",
+      "actual_outcome": "Applied +601.016 context is visible and no completed route outcome is yet shown.",
+      "evidence": [
+        "move-005.txt"
+      ]
+    },
+    {
+      "id": 6,
+      "action": "Trace blue VPN at +601.016 s",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 4846,
+      "recorded_at": "2026-10-23T17:32:03.923Z",
+      "snapshot": "move-006.txt",
+      "classification": "control",
+      "actual_outcome": "At +601.016 both traffic endpoints are reachable, with one path in each direction. Positive later-time control for the clock-boundary defect.",
+      "evidence": [
+        "move-006.txt"
+      ]
+    },
+    {
+      "id": 7,
+      "action": "Return to UTC +601.010 s after successful later trace",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 2230,
+      "recorded_at": "2026-10-23T17:32:12.825Z",
+      "snapshot": "move-007.txt",
+      "classification": "control",
+      "actual_outcome": "Applied context returns to +601.010 and invalidates the later trace result.",
+      "evidence": [
+        "move-007.txt"
+      ]
+    },
+    {
+      "id": 8,
+      "action": "Repeat blue VPN trace at +601.010 s",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 4882,
+      "recorded_at": "2026-10-23T17:32:17.708Z",
+      "snapshot": "move-008.txt",
+      "classification": "confirmed_finding",
+      "actual_outcome": "After the successful +601.016 control, repeating +601.010 restores forward resolved / return unresolved. The defect is reproducible after time reversal.",
+      "evidence": [
+        "move-008.txt"
+      ]
+    },
+    {
+      "id": 9,
+      "action": "Select Forward direction result",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 3745,
+      "recorded_at": "2026-10-23T17:32:21.457Z",
+      "snapshot": "move-009.txt",
+      "classification": "control",
+      "actual_outcome": "Selecting Forward changes the focused direction to resolved A→B while preserving the bundle's incomplete overall result because return remains unresolved.",
+      "evidence": [
+        "move-009.txt"
+      ]
+    },
+    {
+      "id": 10,
+      "action": "Select Return unresolved direction result",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 3739,
+      "recorded_at": "2026-10-23T17:32:25.197Z",
+      "snapshot": "move-010.txt",
+      "classification": "control",
+      "actual_outcome": "Selecting Return displays unresolved B→A and terminal PE-A's unavailable-evidence explanation; no new distinct defect.",
+      "evidence": [
+        "move-010.txt"
+      ]
+    },
+    {
+      "id": 11,
+      "action": "Switch fabric clock policy to Strict",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 420,
+      "recorded_at": "2026-10-23T17:32:39.188Z",
+      "snapshot": "move-011.txt",
+      "classification": "control_selection",
+      "actual_outcome": "Strict clock policy is selected but not applied. Snapshot clearly labels controls pending and retains the prior applied reconstruction.",
+      "evidence": [
+        "move-011.txt"
+      ]
+    },
+    {
+      "id": 12,
+      "action": "Apply Strict reconstruction at +601.010 s",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 2249,
+      "recorded_at": "2026-10-23T17:32:41.438Z",
+      "snapshot": "move-012.txt",
+      "classification": "control",
+      "actual_outcome": "Strict clock-policy reconstruction is applied at +601.010; route results await rerun.",
+      "evidence": [
+        "move-012.txt"
+      ]
+    },
+    {
+      "id": 13,
+      "action": "Trace same VPN under Strict clock policy",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 4766,
+      "recorded_at": "2026-10-23T17:32:46.205Z",
+      "snapshot": "move-013.txt",
+      "classification": "confirmed_finding",
+      "actual_outcome": "Under applied Strict clock policy the same forward-resolved / return-unresolved defect persists at +601.010.",
+      "evidence": [
+        "move-013.txt"
+      ]
+    },
+    {
+      "id": 14,
+      "action": "Filter route table to PE-A",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 450,
+      "recorded_at": "2026-10-23T17:32:56.725Z",
+      "snapshot": "move-014.txt",
+      "classification": "control",
+      "actual_outcome": "Route-table node filter selects PE-A; existing historical trace is retained. This is filter behavior, not a new trace run.",
+      "evidence": [
+        "move-014.txt"
+      ]
+    },
+    {
+      "id": 15,
+      "action": "Filter route table to MPLS L3VPN",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 97,
+      "recorded_at": "2026-10-23T17:32:56.823Z",
+      "snapshot": "move-015.txt",
+      "classification": "control",
+      "actual_outcome": "PE-A plus MPLS L3VPN filter yields six visible rows out of 85 PE-A routes (6 / 591 overall). Existing historical trace remains unchanged.",
+      "evidence": [
+        "move-015.txt"
+      ]
+    },
+    {
+      "id": 16,
+      "action": "Seed trace from PE-A MPLS VPN route to PE-B",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 3126,
+      "recorded_at": "2026-10-23T17:33:06.048Z",
+      "snapshot": "move-016.txt",
+      "classification": "control",
+      "actual_outcome": "Selecting the PE-A→PE-B row loads route parameters and displays Seeded from route table while clearing the previous result. No trace outcome yet.",
+      "evidence": [
+        "move-016.txt"
+      ]
+    },
+    {
+      "id": 17,
+      "action": "Run table-seeded VPN trace at +601.010",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1481,
+      "recorded_at": "2026-10-23T17:33:07.532Z",
+      "snapshot": "move-017.txt",
+      "classification": "superseded_unverified",
+      "actual_outcome": "Seeded trace is still pending: Trace route and its controls are disabled, and no outcome is captured. Move018 changes reconstruction; do not count this attempt as completed seeded validation.",
+      "evidence": [
+        "move-017.txt",
+        "move-018.txt"
+      ]
+    },
+    {
+      "id": 18,
+      "action": "Change fabric to +601.015 s exact suspect admission boundary",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 824,
+      "recorded_at": "2026-10-23T17:33:08.369Z",
+      "snapshot": "move-018.txt",
+      "classification": "pending_capture",
+      "actual_outcome": "Reconstruction to +601.015 is running; the graph explicitly remains applied at +601.010. It supersedes the uncompleted previous trace.",
+      "evidence": [
+        "move-018.txt",
+        "move-019.txt"
+      ]
+    },
+    {
+      "id": 19,
+      "action": "Run seeded trace exactly at +601.015",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 2423,
+      "recorded_at": "2026-10-23T17:33:10.793Z",
+      "snapshot": "move-019.txt",
+      "classification": "superseded_unverified",
+      "actual_outcome": "The +601.015 basis is applied but this trace is still pending (disabled Trace route, no outcome), then superseded by020. Seeded banner is absent after reconstruction. Exact-boundary success is established later by024.",
+      "evidence": [
+        "move-019.txt",
+        "move-020.txt",
+        "move-024.txt"
+      ]
+    },
+    {
+      "id": 20,
+      "action": "Change fabric to +601.014999999 s, 1 ns before boundary",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 808,
+      "recorded_at": "2026-10-23T17:33:11.612Z",
+      "snapshot": "move-020.txt",
+      "classification": "pending_capture",
+      "actual_outcome": "Reconstruction to +601.014999999 is running and retains the prior +601.015 applied basis until completion.",
+      "evidence": [
+        "move-020.txt",
+        "move-021-settled.txt"
+      ]
+    },
+    {
+      "id": 21,
+      "action": "Run seeded trace 1 ns before boundary",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 2335,
+      "recorded_at": "2026-10-23T17:33:13.947Z",
+      "snapshot": "move-021.txt",
+      "classification": "confirmed_finding",
+      "actual_outcome": "Initial capture is pending. Settled supplement at +601.014999999 shows forward resolved / return unresolved. The route parameters persist, but Seeded from route table is absent after reconstruction; do not call this an active-seed execution.",
+      "evidence": [
+        "move-021.txt",
+        "move-021-settled.txt"
+      ]
+    },
+    {
+      "id": 22,
+      "action": "Inspect return result at +601.014999999 s after table seeding",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 3131,
+      "recorded_at": "2026-10-23T17:33:51.344Z",
+      "snapshot": "move-022.txt",
+      "classification": "control",
+      "actual_outcome": "Return direction inspection confirms the settled +601.014999999 unresolved result and terminal PE-A unavailable evidence; repeats021 rather than a separate bug.",
+      "evidence": [
+        "move-022.txt"
+      ]
+    },
+    {
+      "id": 23,
+      "action": "Apply exact +601.015 s boundary again",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 926,
+      "recorded_at": "2026-10-23T17:33:52.271Z",
+      "snapshot": "move-023.txt",
+      "classification": "pending_capture",
+      "actual_outcome": "Reconstruction back to exact +601.015 is pending, with previous +601.014999999 route visible under the updating notice. No completed new trace claim.",
+      "evidence": [
+        "move-023.txt",
+        "move-024.txt"
+      ]
+    },
+    {
+      "id": 24,
+      "action": "Trace and wait for completed outcome at exact boundary",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 4286,
+      "recorded_at": "2026-10-23T17:33:56.558Z",
+      "snapshot": "move-024.txt",
+      "classification": "control",
+      "actual_outcome": "At applied exact +601.015, both endpoints are reachable. Combined with021-settled, this establishes the erroneous native-clock threshold to one nanosecond. Seed is not active in this snapshot.",
+      "evidence": [
+        "move-024.txt",
+        "move-021-settled.txt"
+      ]
+    },
+    {
+      "id": 25,
+      "action": "Return to +601.010 s under strict clock policy",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 852,
+      "recorded_at": "2026-10-23T17:33:57.424Z",
+      "snapshot": "move-025.txt",
+      "classification": "pending_capture",
+      "actual_outcome": "Reconstruction back to +601.010 is pending; it correctly identifies the prior +601.015 graph as applied while updating.",
+      "evidence": [
+        "move-025.txt",
+        "move-026.txt"
+      ]
+    },
+    {
+      "id": 26,
+      "action": "Repeat seeded trace and wait for completed outcome",
+      "note": "",
+      "error": "Error: Error: Timed out after 3000ms waiting for selector internal:text=\"Route outcome\"s: Timed out running CDP command \"Runtime.evaluate\" for tab 3\nlocator.waitFor(visible) timed out for selector internal:text=\"Route outcome\"s\nLocator diagnostics: {\"kind\":\"action_failed\",\"action\":\"waitFor\",\"locator\":\"internal:text=\\\"Route outcome\\\"s\",\"matchCount\":1,\"matches\":[{\"ariaLabel\":null,\"disabled\":false,\"role\":null,\"tag\":\"span\",\"text\":\"Route outcome\",\"type\":null,\"visible\":true}],\"visibleCount\":1,\"truncated\":false}",
+      "elapsed_ms": 4260,
+      "recorded_at": "2026-10-23T17:34:01.684Z",
+      "snapshot": "move-026.txt",
+      "classification": "confirmed_finding_with_tool_wait_error",
+      "actual_outcome": "Wait helper times out in CDP / locator visibility, but captured UI has a completed applied +601.010 result: forward resolved, return unresolved at PE-A. Treat the observed result as evidence and the wait as a tool failure; do not count timeout as a product stall or claim active seed.",
+      "evidence": [
+        "move-026.txt"
+      ]
+    },
+    {
+      "id": 27,
+      "action": "Filter route table to PE-B while return trace is incomplete",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 98,
+      "recorded_at": "2026-10-23T17:34:08.879Z",
+      "snapshot": "move-027.txt",
+      "classification": "control",
+      "actual_outcome": "Route-table filter switches to PE-B while retaining the historical incomplete trace; six MPLS L3VPN rows are available in that node's table.",
+      "evidence": [
+        "move-027.txt"
+      ]
+    },
+    {
+      "id": 28,
+      "action": "Seed PE-B-to-PE-A VPN trace from its active historical row",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 3123,
+      "recorded_at": "2026-10-23T17:34:18.845Z",
+      "snapshot": "move-028.txt",
+      "classification": "control",
+      "actual_outcome": "Selecting the PE-B→PE-A route row loads reversed endpoints and displays Seeded from route table; prior trace outcome is cleared.",
+      "evidence": [
+        "move-028.txt"
+      ]
+    },
+    {
+      "id": 29,
+      "action": "Trace reversed endpoints at +601.010",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 3338,
+      "recorded_at": "2026-10-23T17:34:22.184Z",
+      "snapshot": "move-029.txt",
+      "classification": "confirmed_finding",
+      "actual_outcome": "Completed explicitly table-seeded PE-B→PE-A execution at +601.010 makes the forward direction unresolved at terminal A and return A→B resolved. This rules out a Return-tab-only presentation problem.",
+      "evidence": [
+        "move-029.txt"
+      ]
+    },
+    {
+      "id": 30,
+      "action": "Switch to all paths view for reversed endpoints",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 3119,
+      "recorded_at": "2026-10-23T17:34:25.315Z",
+      "snapshot": "move-030.txt",
+      "classification": "control",
+      "actual_outcome": "All paths becomes pressed for reversed endpoints, retaining the same incomplete bundle and one candidate. No new defect.",
+      "evidence": [
+        "move-030.txt"
+      ]
+    },
+    {
+      "id": 31,
+      "action": "Open VPN service context on unresolved all-paths route",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 336,
+      "recorded_at": "2026-10-23T17:34:51.295Z",
+      "snapshot": "move-031.txt",
+      "classification": "control",
+      "actual_outcome": "VPN service-context tooltip is visible over the all-paths route; route status and direction remain unchanged.",
+      "evidence": [
+        "move-031.txt"
+      ]
+    },
+    {
+      "id": 32,
+      "action": "Return to focused path with context inspector open",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 324,
+      "recorded_at": "2026-10-23T17:34:51.619Z",
+      "snapshot": "move-032.txt",
+      "classification": "confirmed_finding",
+      "actual_outcome": "Pointer activation intended to switch to Focused path leaves All paths pressed and the service tooltip open; snapshot is unchanged from031. Later096 reproduces this, while097 and098–099 establish keyboard and unobstructed-pointer controls.",
+      "evidence": [
+        "move-031.txt",
+        "move-032.txt",
+        "move-096.txt",
+        "move-097.txt",
+        "move-098.txt",
+        "move-099.txt"
+      ]
+    },
+    {
+      "id": 33,
+      "action": "Restore best-effort fabric clock policy",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 78,
+      "recorded_at": "2026-10-23T17:34:51.698Z",
+      "snapshot": "move-033.txt",
+      "classification": "control_selection",
+      "actual_outcome": "Best-effort fabric clock policy is selected but controls are pending; last applied strict context/result remains clearly labelled.",
+      "evidence": [
+        "move-033.txt"
+      ]
+    },
+    {
+      "id": 34,
+      "action": "Select relative-to-watermark time basis",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 74,
+      "recorded_at": "2026-10-23T17:34:51.773Z",
+      "snapshot": "move-034.txt",
+      "classification": "control_selection",
+      "actual_outcome": "Relative-to-watermark basis is selected but not applied. UI labels the pending basis mismatch and explains that the axis is per-node watermark offsets.",
+      "evidence": [
+        "move-034.txt"
+      ]
+    },
+    {
+      "id": 35,
+      "action": "Apply relative latest reconstruction",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 353,
+      "recorded_at": "2026-10-23T17:34:52.126Z",
+      "snapshot": "move-035.txt",
+      "classification": "pending_capture",
+      "actual_outcome": "Latest relative reconstruction is still running; old historical result is retained with reconstruction notice. Completed latest behavior is observed in036.",
+      "evidence": [
+        "move-035.txt",
+        "move-036.txt"
+      ]
+    },
+    {
+      "id": 36,
+      "action": "Trace latest reversed VPN endpoints after historical runs",
+      "note": "",
+      "error": "Error: Error: Playwright selector deadline exceeded\nlocator.waitFor(visible) timed out for selector internal:text=\"Route outcome\"s\nLocator diagnostics: {\"kind\":\"action_failed\",\"action\":\"waitFor\",\"locator\":\"internal:text=\\\"Route outcome\\\"s\",\"matchCount\":1,\"matches\":[{\"ariaLabel\":null,\"disabled\":false,\"role\":null,\"tag\":\"span\",\"text\":\"Route outcome\",\"type\":null,\"visible\":true}],\"visibleCount\":1,\"truncated\":false}",
+      "elapsed_ms": 4862,
+      "recorded_at": "2026-10-23T17:34:56.989Z",
+      "snapshot": "move-036.txt",
+      "classification": "control_with_tool_wait_error",
+      "actual_outcome": "Locator wait reports timeout despite the result being visible. Captured applied relative/latest context shows both endpoints reachable with one path per direction. This establishes eventual recovery, not successful completion of the wait helper or isolated latency.",
+      "evidence": [
+        "move-036.txt"
+      ]
+    },
+    {
+      "id": 37,
+      "action": "Open PE-A single-node workspace from reconstructed latest fabric",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 342,
+      "recorded_at": "2026-10-23T17:35:03.996Z",
+      "snapshot": "move-037.txt",
+      "classification": "pending_then_settled",
+      "actual_outcome": "Initial snapshot is the node loading shell. The supplementary settled snapshot shows PE-A with 1,250,005 matched events and 7,510 resources at latest time.",
+      "evidence": [
+        "move-037.txt",
+        "move-037-settled.txt"
+      ]
+    },
+    {
+      "id": 38,
+      "action": "Switch resource table to DTE kind",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1614,
+      "recorded_at": "2026-10-23T17:35:30.430Z",
+      "snapshot": "move-038.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "DTE resource tab is selected with 1,875 resources; resource rows and graph are at +720 s.",
+      "evidence": [
+        "move-038.txt"
+      ]
+    },
+    {
+      "id": 39,
+      "action": "Search resource table for disconnected service dte-001874",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 605,
+      "recorded_at": "2026-10-23T17:35:31.036Z",
+      "snapshot": "move-039.txt",
+      "classification": "pending_snapshot",
+      "actual_outcome": "Search input contains dte-001874 but the raw snapshot still contains the previous 1,875-resource table. The filtered result is established by move 040, not this immediate capture.",
+      "evidence": [
+        "move-039.txt",
+        "move-040.txt"
+      ]
+    },
+    {
+      "id": 40,
+      "action": "Select DTE1874 from searched resource row",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 779,
+      "recorded_at": "2026-10-23T17:35:38.596Z",
+      "snapshot": "move-040.txt",
+      "classification": "partial_pending",
+      "actual_outcome": "Filtered DTE1874 row is selected and programmed with next hop ETG1874. Correlation graph says Updating to +720 s and transiently shows lifecycle absence; do not treat that transient as a settled defect.",
+      "evidence": [
+        "move-040.txt"
+      ]
+    },
+    {
+      "id": 41,
+      "action": "Switch DTE1874 from focused graph to all correlations",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 718,
+      "recorded_at": "2026-10-23T17:35:44.604Z",
+      "snapshot": "move-041.txt",
+      "classification": "pending_snapshot",
+      "actual_outcome": "All-correlations request is still Updating to +720 s while the previous focused DTE1874 graph remains visible. This snapshot does not prove full-graph omission.",
+      "evidence": [
+        "move-041.txt"
+      ]
+    },
+    {
+      "id": 42,
+      "action": "Restore DTE1874 focused graph",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 741,
+      "recorded_at": "2026-10-23T17:36:03.279Z",
+      "snapshot": "move-042.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Focused graph is settled at +720 s and contains DTE1874→ETG1874; selected-focus relationship index is1.",
+      "evidence": [
+        "move-042.txt"
+      ]
+    },
+    {
+      "id": 43,
+      "action": "Repeat all-correlations switch for DTE1874",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 538,
+      "recorded_at": "2026-10-23T17:36:03.818Z",
+      "snapshot": "move-043.txt",
+      "classification": "pending_snapshot",
+      "actual_outcome": "Repeated all-correlations request is still updating while the old focused graph remains visible. Use settled move 044 for the resulting defect.",
+      "evidence": [
+        "move-043.txt",
+        "move-044.txt"
+      ]
+    },
+    {
+      "id": 44,
+      "action": "Scroll to selected-resource relationship index in capped full graph",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 856,
+      "recorded_at": "2026-10-23T17:36:04.675Z",
+      "snapshot": "move-044.txt",
+      "classification": "confirmed_defect",
+      "actual_outcome": "Settled broad graph retains selected DTE1874 but omits its disconnected component and labels its relationship index 0 with unconditional no-resources-at-this-time text. The UI does disclose a 500-resource cap. Focused controls prove the active relation.",
+      "evidence": [
+        "move-044.txt",
+        "full-graph-false-zero.png",
+        "move-042.txt",
+        "move-045.txt"
+      ]
+    },
+    {
+      "id": 45,
+      "action": "Recover DTE1874 using Focus selected again",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 663,
+      "recorded_at": "2026-10-23T17:36:05.368Z",
+      "snapshot": "move-045.txt",
+      "classification": "recovery_confirmed",
+      "actual_outcome": "Focus selected restores DTE1874→ETG1874 and index 1 at unchanged +720 s.",
+      "evidence": [
+        "move-045.txt"
+      ]
+    },
+    {
+      "id": 46,
+      "action": "Clear resource search while keeping DTE1874 graph selected",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 314,
+      "recorded_at": "2026-10-23T17:36:24.708Z",
+      "snapshot": "move-046.txt",
+      "classification": "partial_pending",
+      "actual_outcome": "Search text is cleared and selected graph remains DTE1874. Immediate table still shows the previously filtered DTE1874 row; this is not evidence that the full cleared-search result has settled.",
+      "evidence": [
+        "move-046.txt"
+      ]
+    },
+    {
+      "id": 47,
+      "action": "Search DTE1 without changing selected time",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 266,
+      "recorded_at": "2026-10-23T17:36:24.974Z",
+      "snapshot": "move-047.txt",
+      "classification": "pending_snapshot",
+      "actual_outcome": "Search input changes to DTE1, while table explicitly reports updating and still displays DTE1874. Selected graph correctly remains DTE1874 until an actual resource selection.",
+      "evidence": [
+        "move-047.txt"
+      ]
+    },
+    {
+      "id": 48,
+      "action": "Select DTE1 resource row after disjoint search",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 676,
+      "recorded_at": "2026-10-23T17:36:31.994Z",
+      "snapshot": "move-048.txt",
+      "classification": "partial_pending",
+      "actual_outcome": "DTE1 result row is selected and shows IP_ROUTING as its latest next hop. Graph is still updating; the transient lifecycle-absence message is not a settled result.",
+      "evidence": [
+        "move-048.txt"
+      ]
+    },
+    {
+      "id": 49,
+      "action": "Apply 1 ns range just before DTE1 creation without moving cursor",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1052,
+      "recorded_at": "2026-10-23T17:36:33.047Z",
+      "snapshot": "move-049.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Applying a range alone leaves the selected moment at +720 s. Settled DTE1 table and focused graph both retain IP_ROUTING as next hop.",
+      "evidence": [
+        "move-049.txt"
+      ]
+    },
+    {
+      "id": 50,
+      "action": "Select range start 1 ns before DTE1 creation as current moment",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 3847,
+      "recorded_at": "2026-10-23T17:37:14.235Z",
+      "snapshot": "move-050.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "One nanosecond before DTE1 creation, the table says absent and the graph explicitly identifies the selected root as outside its lifecycle.",
+      "evidence": [
+        "move-050.txt"
+      ]
+    },
+    {
+      "id": 51,
+      "action": "Select exact DTE1 creation +120.000100000",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 3527,
+      "recorded_at": "2026-10-23T17:37:23.588Z",
+      "snapshot": "move-051.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "At exact DTE1 creation (+120.000100000 s), table and graph show programmed DTE1→ETG1 with relationship index 1.",
+      "evidence": [
+        "move-051.txt"
+      ]
+    },
+    {
+      "id": 52,
+      "action": "Return 1 ns before DTE1 creation",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1947,
+      "recorded_at": "2026-10-23T17:37:25.557Z",
+      "snapshot": "move-052.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Returning one nanosecond before creation restores absent table state and inactive-focus graph state.",
+      "evidence": [
+        "move-052.txt"
+      ]
+    },
+    {
+      "id": 53,
+      "action": "Reenter exact DTE1 creation after absence",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1859,
+      "recorded_at": "2026-10-23T17:37:27.431Z",
+      "snapshot": "move-053.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Reentering exact creation restores programmed DTE1→ETG1 in both table and graph.",
+      "evidence": [
+        "move-053.txt"
+      ]
+    },
+    {
+      "id": 54,
+      "action": "Select DTE0 failover instant while DTE1 remains selected: +360.037500",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 5830,
+      "recorded_at": "2026-10-23T17:37:45.307Z",
+      "snapshot": "move-054.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "At DTE0's +360.037500 s failover time, selected DTE1 still points to ETG1; its own update has not occurred yet.",
+      "evidence": [
+        "move-054.txt"
+      ]
+    },
+    {
+      "id": 55,
+      "action": "Advance100us to exact DTE1 failover +360.037600",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 5700,
+      "recorded_at": "2026-10-23T17:37:51.025Z",
+      "snapshot": "move-055.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Advancing 100 microseconds to DTE1's exact failover changes both table and graph to DTE1→ETG2.",
+      "evidence": [
+        "move-055.txt"
+      ]
+    },
+    {
+      "id": 56,
+      "action": "Return100us to DTE1 old next hop",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1944,
+      "recorded_at": "2026-10-23T17:37:52.989Z",
+      "snapshot": "move-056.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Returning 100 microseconds restores DTE1→ETG1 in table and graph.",
+      "evidence": [
+        "move-056.txt"
+      ]
+    },
+    {
+      "id": 57,
+      "action": "Change search from DTE1 to DTE0 at unchanged cursor",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1271,
+      "recorded_at": "2026-10-23T17:37:54.281Z",
+      "snapshot": "move-057.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Search changes the table to DTE0 with IP_ROUTING next hop while graph selection remains DTE1. Search alone does not select the new row.",
+      "evidence": [
+        "move-057.txt"
+      ]
+    },
+    {
+      "id": 58,
+      "action": "Select DTE0 at its own exact failover instant",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1453,
+      "recorded_at": "2026-10-23T17:37:55.735Z",
+      "snapshot": "move-058.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Selecting DTE0 at its exact failover updates graph focus to DTE0→IP_ROUTING, matching the resource row.",
+      "evidence": [
+        "move-058.txt"
+      ]
+    },
+    {
+      "id": 59,
+      "action": "Advance to ES0 restoration +480.000 before DTE0 restore",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 7192,
+      "recorded_at": "2026-10-23T17:38:10.163Z",
+      "snapshot": "move-059.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "At +480 s ES restoration, DTE0 still points to IP_ROUTING in both views; DTE0's separate restore event has not yet occurred.",
+      "evidence": [
+        "move-059.txt"
+      ]
+    },
+    {
+      "id": 60,
+      "action": "Advance to exact DTE0 restoration +480.037500",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 6315,
+      "recorded_at": "2026-10-23T17:38:16.504Z",
+      "snapshot": "move-060.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "At DTE0's exact +480.037500 s restoration, table and graph change to DTE0→ETG0.",
+      "evidence": [
+        "move-060.txt"
+      ]
+    },
+    {
+      "id": 61,
+      "action": "Search and select DTE1 at DTE0 restoration instant",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1337,
+      "recorded_at": "2026-10-23T17:38:17.861Z",
+      "snapshot": "move-061.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Selecting DTE1 at DTE0's restoration time shows DTE1→ETG2 in table and graph, before DTE1's own restoration.",
+      "evidence": [
+        "move-061.txt"
+      ]
+    },
+    {
+      "id": 62,
+      "action": "Advance100us to exact DTE1 restoration +480.037600",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 6240,
+      "recorded_at": "2026-10-23T17:38:24.117Z",
+      "snapshot": "move-062.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Advancing 100 microseconds to +480.037600 s changes DTE1→ETG1 in both views.",
+      "evidence": [
+        "move-062.txt"
+      ]
+    },
+    {
+      "id": 63,
+      "action": "Select failed DTE1 change at +600.675100",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 4021,
+      "recorded_at": "2026-10-23T17:38:48.094Z",
+      "snapshot": "move-063.txt",
+      "classification": "target_correct_other_panel_pending",
+      "actual_outcome": "At failed DTE1 change +600.675100 s, resource table and focused graph preserve IP_ROUTING. Other dashboard data still reports updating from +480.037 s in this snapshot.",
+      "evidence": [
+        "move-063.txt"
+      ]
+    },
+    {
+      "id": 64,
+      "action": "Search normalized log for failed event01006751",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 294,
+      "recorded_at": "2026-10-23T17:38:48.408Z",
+      "snapshot": "move-064.txt",
+      "classification": "pending_then_settled",
+      "actual_outcome": "Entered normalized-log event search. Initial capture is not full settlement; supplementary snapshot contains the targeted failed DTE1 event and settled +600.675 s resource state.",
+      "evidence": [
+        "move-064.txt",
+        "move-064-settled.txt"
+      ]
+    },
+    {
+      "id": 65,
+      "action": "Activate failed DTE1 event in filtered normalized log",
+      "note": "",
+      "error": "Error: Error: No node found at given location\nwaiting on click for selector internal:role=row[name=\"+600.675 s Normalized Data bridge dte_next_hop_dependency_change dte:svc-000001 modify failure\"s]\nLocator diagnostics: {\"kind\":\"action_failed\",\"action\":\"click\",\"locator\":\"internal:role=row[name=\\\"+600.675 s Normalized Data bridge dte_next_hop_dependency_change dte:svc-000001 modify failure\\\"s]\",\"matchCount\":1,\"matches\":[{\"ariaLabel\":null,\"disabled\":false,\"role\":null,\"tag\":\"tr\",\"text\":\"+600.675 sNormalizedData bridgedte_next_hop_dependency_changedte:svc-000001modifyfailure\",\"type\":null,\"visible\":true}],\"visibleCount\":1,\"truncated\":false}",
+      "elapsed_ms": 617,
+      "recorded_at": "2026-10-23T17:39:11.718Z",
+      "snapshot": "move-065.txt",
+      "classification": "action_failed",
+      "actual_outcome": "Pointer activation of the clipped row center failed with No node found at given location. The row was not selected; this is a recorded interaction/test limitation, recovered by Enter in 066.",
+      "evidence": [
+        "move-065.txt",
+        "moves.json"
+      ]
+    },
+    {
+      "id": 66,
+      "action": "Activate failed DTE1 log row with Enter after clipped row-center pointer failed",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 733,
+      "recorded_at": "2026-10-23T17:39:19.772Z",
+      "snapshot": "move-066.txt",
+      "classification": "recovery_with_pending_snapshot",
+      "actual_outcome": "Enter selects the failed normalized-log row and enables Reveal in timeline. Table and graph are still updating in this capture; 067 supplies their subsequent settled state.",
+      "evidence": [
+        "move-066.txt",
+        "move-067.txt"
+      ]
+    },
+    {
+      "id": 67,
+      "action": "Reveal failed DTE1 event from log into timeline",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 793,
+      "recorded_at": "2026-10-23T17:39:33.890Z",
+      "snapshot": "move-067.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Reveal in timeline completes with failed DTE1 event selected. Resource row and focused graph remain DTE1→IP_ROUTING at +600.675 s, preserving applied state despite the failed intent.",
+      "evidence": [
+        "move-067.txt"
+      ]
+    },
+    {
+      "id": 68,
+      "action": "Clear normalized log search after revealing failed event",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 271,
+      "recorded_at": "2026-10-23T17:39:34.389Z",
+      "snapshot": "move-068.txt",
+      "classification": "observed_no_new_defect",
+      "actual_outcome": "Clearing normalized-log search leaves failed-event selection and DTE1→IP_ROUTING resource focus intact. This immediate capture does not establish complete repopulation of the unfiltered log.",
+      "evidence": [
+        "move-068.txt"
+      ]
+    },
+    {
+      "id": 69,
+      "action": "Select successful DTE0 retry time +600.825000",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 3767,
+      "recorded_at": "2026-10-23T17:39:38.157Z",
+      "snapshot": "move-069.txt",
+      "classification": "target_correct_other_panel_pending",
+      "actual_outcome": "Cursor advances to +600.825 s while DTE1 remains selected; table and graph show DTE1→ETG2. Dashboard still reports updating from the prior timestamp.",
+      "evidence": [
+        "move-069.txt"
+      ]
+    },
+    {
+      "id": 70,
+      "action": "Search and select DTE0 at successful retry timestamp",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1507,
+      "recorded_at": "2026-10-23T17:39:59.632Z",
+      "snapshot": "move-070.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Search and select DTE0 at successful retry +600.825 s yields DTE0→ETG17 in table and graph.",
+      "evidence": [
+        "move-070.txt"
+      ]
+    },
+    {
+      "id": 71,
+      "action": "Move backward to DTE0 failed attempt +600.750000",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 6537,
+      "recorded_at": "2026-10-23T17:40:06.188Z",
+      "snapshot": "move-071.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Returning to failed attempt +600.750 s restores DTE0→IP_ROUTING; attempted ETG17 state is not applied.",
+      "evidence": [
+        "move-071.txt"
+      ]
+    },
+    {
+      "id": 72,
+      "action": "Repeat successful retry +600.825000 after failed attempt",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1914,
+      "recorded_at": "2026-10-23T17:40:08.119Z",
+      "snapshot": "move-072.txt",
+      "classification": "target_correct_other_panel_pending",
+      "actual_outcome": "Repeated successful retry timestamp restores DTE0→ETG17 in table and graph. Dashboard is still updating in the saved snapshot.",
+      "evidence": [
+        "move-072.txt"
+      ]
+    },
+    {
+      "id": 73,
+      "action": "Pin current DTE0→ETG17 edge inspector using keyboard",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 657,
+      "recorded_at": "2026-10-23T17:40:33.191Z",
+      "snapshot": "move-073.txt",
+      "classification": "inconclusive_pin_precondition",
+      "actual_outcome": "Keyboard activation was attempted, but the popup was hidden because the relationship anchor was offscreen. No visible pinned-popup condition was established; this is not a successful pin test.",
+      "evidence": [
+        "move-073.txt"
+      ]
+    },
+    {
+      "id": 74,
+      "action": "Move cursor back to failure while edge inspector was pinned",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 2835,
+      "recorded_at": "2026-10-23T17:40:38.487Z",
+      "snapshot": "move-074.txt",
+      "classification": "partial_correct_pin_test_invalid",
+      "actual_outcome": "Cursor returns to failed-attempt time and table/graph correctly show DTE0→IP_ROUTING. Because 073 did not establish a visible pinned popup, this does not validate pinned-popup behavior during cursor changes. Dashboard is still updating.",
+      "evidence": [
+        "move-074.txt"
+      ]
+    },
+    {
+      "id": 75,
+      "action": "Ctrl-click correlated IP-routing endpoint to reveal it in timeline",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1468,
+      "recorded_at": "2026-10-23T17:41:00.401Z",
+      "snapshot": "move-075.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Ctrl-click selects/reveals IP_ROUTING and changes the resource kind to IP routing. Existing DTE search remains, yielding zero matching IP-routing rows; graph has selected IP_ROUTING with 499 returned relationships and 30 shown.",
+      "evidence": [
+        "move-075.txt"
+      ]
+    },
+    {
+      "id": 76,
+      "action": "Switch revealed resource lanes to Combined layout",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 591,
+      "recorded_at": "2026-10-23T17:41:01.005Z",
+      "snapshot": "move-076.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Combined lane layout becomes pressed. Selected IP_ROUTING and its30-of 499 relationship index remain unchanged.",
+      "evidence": [
+        "move-076.txt"
+      ]
+    },
+    {
+      "id": 77,
+      "action": "Switch resource lanes back to Separate layout",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 702,
+      "recorded_at": "2026-10-23T17:41:01.708Z",
+      "snapshot": "move-077.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Separate lane layout becomes pressed again; selected IP_ROUTING and relationship index remain unchanged.",
+      "evidence": [
+        "move-077.txt"
+      ]
+    },
+    {
+      "id": 78,
+      "action": "Page high-fanout IP-routing relationship index from30 to60",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 788,
+      "recorded_at": "2026-10-23T17:41:14.023Z",
+      "snapshot": "move-078.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Relationship pagination expands from 30 to 60 of 499 returned IP_ROUTING relationships.",
+      "evidence": [
+        "move-078.txt"
+      ]
+    },
+    {
+      "id": 79,
+      "action": "Collapse high-fanout correlation component",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 593,
+      "recorded_at": "2026-10-23T17:41:14.626Z",
+      "snapshot": "move-079.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Correlation component collapses and exposes Expand correlation; relationship index is hidden.",
+      "evidence": [
+        "move-079.txt"
+      ]
+    },
+    {
+      "id": 80,
+      "action": "Reopen correlation component after paging",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 741,
+      "recorded_at": "2026-10-23T17:41:15.368Z",
+      "snapshot": "move-080.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Reopening correlation preserves IP_ROUTING focus and 60-of 499 expanded relationship count.",
+      "evidence": [
+        "move-080.txt"
+      ]
+    },
+    {
+      "id": 81,
+      "action": "Page relationship index again after collapse/reopen",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 751,
+      "recorded_at": "2026-10-23T17:41:16.129Z",
+      "snapshot": "move-081.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Further pagination expands the same relationship index to 90 of 499.",
+      "evidence": [
+        "move-081.txt"
+      ]
+    },
+    {
+      "id": 82,
+      "action": "Search and select disconnected DTE1874 after high-fanout navigation",
+      "note": "",
+      "error": "Error: Error: Playwright selector deadline exceeded\nwaiting on click for selector #resource-tables >> internal:role=cell[name=\"dte-001874 node-a/data-bridge-layer/DTE/blue/dte-001874\"s]\nLocator diagnostics: {\"kind\":\"no_matches\",\"action\":\"click\",\"locator\":\"#resource-tables >> internal:role=cell[name=\\\"dte-001874 node-a/data-bridge-layer/DTE/blue/dte-001874\\\"s]\",\"matchCount\":0,\"matches\":[],\"visibleCount\":0,\"truncated\":false}",
+      "elapsed_ms": 3840,
+      "recorded_at": "2026-10-23T17:41:44.849Z",
+      "snapshot": "move-082.txt",
+      "classification": "action_failed_precondition",
+      "actual_outcome": "Search changed to DTE1874, but active resource kind remained IP routing from 075. DTE cell lookup had no matches and timed out; selected graph remained IP_ROUTING. This does not establish missing DTE data.",
+      "evidence": [
+        "move-082.txt",
+        "moves.json"
+      ]
+    },
+    {
+      "id": 83,
+      "action": "Select1ns before disconnected DTE1874 creation",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 5953,
+      "recorded_at": "2026-10-23T17:41:50.803Z",
+      "snapshot": "move-083.txt",
+      "classification": "different_target_observed",
+      "actual_outcome": "Time changes to one nanosecond before DTE1874 creation, but selected resource is still IP_ROUTING. Its focused graph shows 499 returned relationships. This move is not a DTE1874 lifecycle check.",
+      "evidence": [
+        "move-083.txt"
+      ]
+    },
+    {
+      "id": 84,
+      "action": "Select exact disconnected DTE1874 creation",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 3770,
+      "recorded_at": "2026-10-23T17:41:54.592Z",
+      "snapshot": "move-084.txt",
+      "classification": "different_target_observed",
+      "actual_outcome": "Time changes to exact DTE1874 creation while resource kind and selected graph remain IP_ROUTING. Its499-relationship graph persists; dashboard is updating. DTE1874 creation is not tested by this selection.",
+      "evidence": [
+        "move-084.txt"
+      ]
+    },
+    {
+      "id": 85,
+      "action": "Show all correlations at DTE1874 exact creation",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1881,
+      "recorded_at": "2026-10-23T17:41:56.496Z",
+      "snapshot": "move-085.txt",
+      "classification": "different_target_observed",
+      "actual_outcome": "All-correlations mode operates on retained IP_ROUTING selection, showing 473 relationships within the bounded response. This is not a DTE1874 omission reproduction.",
+      "evidence": [
+        "move-085.txt"
+      ]
+    },
+    {
+      "id": 86,
+      "action": "Restore focus at DTE1874 exact creation",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1280,
+      "recorded_at": "2026-10-23T17:41:57.958Z",
+      "snapshot": "move-086.txt",
+      "classification": "different_target_observed",
+      "actual_outcome": "Focus selected restores IP_ROUTING's focused 499-relationship result. The action succeeded on IP_ROUTING, not DTE1874.",
+      "evidence": [
+        "move-086.txt"
+      ]
+    },
+    {
+      "id": 87,
+      "action": "Select DTE kind after graph jump had selected IP-routing kind; then select DTE1874",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1778,
+      "recorded_at": "2026-10-23T17:42:31.294Z",
+      "snapshot": "move-087.txt",
+      "classification": "recovery_confirmed",
+      "actual_outcome": "Explicitly selecting DTE kind repairs the test precondition. DTE1874 row and graph are now selected at exact creation and show DTE1874→ETG1874 with index 1.",
+      "evidence": [
+        "move-087.txt"
+      ]
+    },
+    {
+      "id": 88,
+      "action": "Check selected DTE1874 1ns before creation with correct table kind",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1892,
+      "recorded_at": "2026-10-23T17:42:33.208Z",
+      "snapshot": "move-088.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "With correct selected DTE1874, one nanosecond before creation gives absent resource row and out-of-lifecycle focused graph.",
+      "evidence": [
+        "move-088.txt"
+      ]
+    },
+    {
+      "id": 89,
+      "action": "Reenter exact DTE1874 creation with correct selected focus",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 2308,
+      "recorded_at": "2026-10-23T17:42:35.533Z",
+      "snapshot": "move-089.txt",
+      "classification": "observed_correct",
+      "actual_outcome": "Reentering exact DTE1874 creation restores programmed resource row and DTE1874→ETG1874 relationship index 1.",
+      "evidence": [
+        "move-089.txt"
+      ]
+    },
+    {
+      "id": 90,
+      "action": "Repeat full-graph omission at DTE1874 exact creation with correct focus",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1692,
+      "recorded_at": "2026-10-23T17:42:37.248Z",
+      "snapshot": "move-090.txt",
+      "classification": "confirmed_defect_repetition",
+      "actual_outcome": "At exact creation, settled all-correlations mode again omits selected DTE1874 and falsely reports index 0 plus temporal absence, despite a programmed table row. The general 500-resource cap is disclosed.",
+      "evidence": [
+        "move-090.txt",
+        "move-089.txt",
+        "move-091.txt"
+      ]
+    },
+    {
+      "id": 91,
+      "action": "Recover DTE1874 relation with focused graph at creation",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1129,
+      "recorded_at": "2026-10-23T17:42:38.388Z",
+      "snapshot": "move-091.txt",
+      "classification": "recovery_confirmed",
+      "actual_outcome": "Focus selected restores DTE1874→ETG1874 and index 1 at unchanged exact-creation time.",
+      "evidence": [
+        "move-091.txt"
+      ]
+    },
+    {
+      "id": 92,
+      "action": "Return to multi-node fabric after resource time and scope changes",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 349,
+      "recorded_at": "2026-10-23T17:42:45.848Z",
+      "snapshot": "move-092.txt",
+      "classification": "pending_capture_later_settled",
+      "actual_outcome": "Initial Fabric-return snapshot is still reconstructing/loading capabilities. Settled supplement has applied latest context and restored B→A route parameters but no executed trace outcome. Return does not automatically rerun the trace.",
+      "evidence": [
+        "move-092.txt",
+        "move-092-settled.txt"
+      ]
+    },
+    {
+      "id": 93,
+      "action": "Switch restored route from All paths to Focused path by pointer",
+      "note": "",
+      "error": "Error: Error: Playwright selector deadline exceeded\nwaiting on click for selector internal:role=button[name=\"Focused path\"s]\nLocator diagnostics: {\"kind\":\"no_matches\",\"action\":\"click\",\"locator\":\"internal:role=button[name=\\\"Focused path\\\"s]\",\"matchCount\":0,\"matches\":[],\"visibleCount\":0,\"truncated\":false}",
+      "elapsed_ms": 3403,
+      "recorded_at": "2026-10-23T17:43:02.215Z",
+      "snapshot": "move-093.txt",
+      "classification": "tool_limited",
+      "actual_outcome": "Pointer attempt finds no Focused path control because no trace result has been run since returning. Snapshot matches092-settled with Trace route available and no route graph controls. This is an invalid/unavailable test target, not evidence of the popup bug.",
+      "evidence": [
+        "move-093.txt",
+        "move-092-settled.txt"
+      ]
+    },
+    {
+      "id": 94,
+      "action": "Run restored table-seeded route after returning from node workspace",
+      "note": "",
+      "error": "Error: Error: Timed out after 3000ms waiting for selector internal:text=\"Route outcome\"s: Timed out running CDP command \"Runtime.evaluate\" for tab 3\nlocator.waitFor(visible) timed out for selector internal:text=\"Route outcome\"s",
+      "elapsed_ms": 5531,
+      "recorded_at": "2026-10-23T17:43:30.500Z",
+      "snapshot": "move-094.txt",
+      "classification": "control_with_tool_wait_error",
+      "actual_outcome": "CDP/locator wait times out, but final capture shows completed latest B⇄A trace, both endpoints reachable, All paths selected. Seed banner is absent, so call it a rerun of restored parameters rather than a retained-seed execution.",
+      "evidence": [
+        "move-094.txt"
+      ]
+    },
+    {
+      "id": 95,
+      "action": "Open VPN service context after cross-component return and rerun",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 763,
+      "recorded_at": "2026-10-23T17:43:43.863Z",
+      "snapshot": "move-095.txt",
+      "classification": "control",
+      "actual_outcome": "Service-context tooltip opens over the completed all-paths route after returning from Single node; route remains reachable in both directions.",
+      "evidence": [
+        "move-095.txt"
+      ]
+    },
+    {
+      "id": 96,
+      "action": "Activate Focused path by pointer while service inspector is open",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 708,
+      "recorded_at": "2026-10-23T17:43:44.572Z",
+      "snapshot": "move-096.txt",
+      "classification": "confirmed_finding",
+      "actual_outcome": "Pointer Focused path activation while the service tooltip is open leaves All paths pressed and the tooltip visible. Same unchanged state as095, reproducing032 after cross-component navigation.",
+      "evidence": [
+        "move-095.txt",
+        "move-096.txt",
+        "route-mode-pointer-after-popup.png"
+      ]
+    },
+    {
+      "id": 97,
+      "action": "Activate Focused path with Enter while pointer target is covered by service tooltip",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1296,
+      "recorded_at": "2026-10-23T17:44:08.728Z",
+      "snapshot": "move-097.txt",
+      "classification": "control",
+      "actual_outcome": "Enter activation changes the route to Focused path, which is now pressed; both directions remain reachable. Establishes keyboard recovery for the obstructed-pointer case.",
+      "evidence": [
+        "move-097.txt"
+      ]
+    },
+    {
+      "id": 98,
+      "action": "Switch to All paths without service tooltip as pointer control",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 3956,
+      "recorded_at": "2026-10-23T17:44:12.769Z",
+      "snapshot": "move-098.txt",
+      "classification": "control",
+      "actual_outcome": "With service tooltip dismissed, pointer All paths activation changes mode successfully; both directions remain reachable.",
+      "evidence": [
+        "move-098.txt"
+      ]
+    },
+    {
+      "id": 99,
+      "action": "Switch to Focused path without tooltip as pointer control",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 3956,
+      "recorded_at": "2026-10-23T17:44:16.819Z",
+      "snapshot": "move-099.txt",
+      "classification": "control",
+      "actual_outcome": "With no tooltip, pointer Focused path activation succeeds; focused route and pressed button agree.",
+      "evidence": [
+        "move-099.txt"
+      ]
+    },
+    {
+      "id": 100,
+      "action": "Switch restored VPN trace to Return direction after keyboard and pointer mode recovery",
+      "note": "",
+      "error": null,
+      "elapsed_ms": 1219,
+      "recorded_at": "2026-10-23T17:44:26.354Z",
+      "snapshot": "move-100.txt",
+      "classification": "control",
+      "actual_outcome": "Return tab becomes selected and focused graph describes resolved A→B return direction, while both endpoints remain reachable. Settled supplement agrees with the initial capture.",
+      "evidence": [
+        "move-100.txt",
+        "move-100-settled.txt"
+      ]
+    }
+  ]
+}

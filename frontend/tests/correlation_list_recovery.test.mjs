@@ -169,6 +169,7 @@ function harness() {
   const container = {
     dataset: {}, scrollTop: 123, groups: [], details: [], buttons: [], tags: [],
     set innerHTML(html) {
+      this.html = html;
       focused = null;
       this.groups = []; this.details = []; this.buttons = []; this.tags = [];
       const chunks = [...html.matchAll(/<details class="correlation-group (incoming|outgoing)" open>([\s\S]*?)(?=<details class="correlation-group |$)/g)];
@@ -207,7 +208,8 @@ function harness() {
     bindCorrelationHover() {}, graphEdgeHoverHtml() {}, closeCorrelationHover() {},
   };
   const render = new Function(...Object.keys(deps), `${renderer}; return renderCorrelationList;`)(...Object.values(deps));
-  const graph = { at: 1, nodes: [], edges: Array.from({ length: 5 }, (_, i) => ({ id: `e${i}`, source: `r${i}`, target: 'root', type: 'owns' })) };
+  const graph = { at: 1, nodes: ['root', ...Array.from({ length: 5 }, (_, i) => `r${i}`)].map(id => ({ id })),
+    edges: Array.from({ length: 5 }, (_, i) => ({ id: `e${i}`, source: `r${i}`, target: 'root', type: 'owns' })) };
   return { state, container, render, graph, scrolls, focused: () => focused };
 }
 
@@ -216,7 +218,7 @@ test('same-query redraw retains both closed groups and open edge details', () =>
   h.render(h.graph);
   h.container.groups[0].open = false;
   h.container.details.find(item => item.tag?.dataset.correlationEdgeId === 'e0').open = true;
-  h.render({ ...h.graph, nodes: [] });
+  h.render({ ...h.graph, nodes: h.graph.nodes.map(node => ({ ...node })) });
   assert.equal(h.container.groups[0].open, false);
   assert.equal(h.container.details.find(item => item.tag?.dataset.correlationEdgeId === 'e0').open, true);
 });
@@ -249,4 +251,77 @@ test('repeated pagination focuses and reveals the next control, then the final g
   assert.equal(h.focused(), h.container.groups[1].summary);
   assert.equal(h.scrolls.at(-1).element, h.focused());
   assert.equal(h.scrolls.length, 2);
+});
+
+for (const metadata of [
+  { truncated: false, query: { defaulted_to_representative_roots: true, accepted_resource_ids: ['other'] } },
+  { truncated: true, query: { dropped_resource_ids: ['root'], roots_truncated: true } },
+]) test(`omitted focus is not an absent relationship (${metadata.truncated ? 'capped' : 'representative'} response)`, () => {
+  const h = harness();
+  h.state.graphShowFull = true;
+  h.render({ at: 1, nodes: [{ id: 'other' }], edges: [], ...metadata });
+  assert.match(h.container.html, /Not covered at 1/);
+  assert.match(h.container.html, /This response does not cover the selected focus/);
+  assert.match(h.container.html, /Choose Focus selected to query its relationships/);
+  assert.doesNotMatch(h.container.html, /0 at 1|outside its lifecycle|No resources in this direction/);
+  assert.equal(h.container.groups.length, 0);
+});
+
+test('focused to broad to focused keeps the selected identity and recovers its returned relationships', () => {
+  const h = harness();
+  h.render(h.graph);
+  assert.match(h.container.html, /5 returned at 1/);
+  h.state.graphShowFull = true;
+  h.render({ at: 1, nodes: [], edges: [], query: { defaulted_to_representative_roots: true } });
+  assert.match(h.container.html, /Not covered at 1/);
+  assert.equal(h.state.selectedResourceId, 'root');
+  h.state.graphShowFull = false;
+  h.render(h.graph);
+  assert.match(h.container.html, /5 returned at 1/);
+  assert.doesNotMatch(h.container.html, /Not covered/);
+  assert.equal(h.container.groups.length, 2);
+});
+
+test('known inactive and unknown roots retain their distinct response semantics', () => {
+  const h = harness();
+  h.render({ at: 1, nodes: [], edges: [], query: { inactive_resource_ids: ['root'] } });
+  assert.match(h.container.html, /0 at 1/);
+  assert.match(h.container.html, /outside its lifecycle at this moment/);
+  assert.doesNotMatch(h.container.html, /Not covered/);
+  h.render({ at: 1, nodes: [], edges: [], query: { unknown_resource_ids: ['root'] } });
+  assert.match(h.container.html, /Unknown resource at 1/);
+  assert.match(h.container.html, /unknown to this revision/);
+  assert.doesNotMatch(h.container.html, /outside its lifecycle/);
+});
+
+test('covered roots and unselected graphs qualify counts as returned relationships', () => {
+  const h = harness();
+  h.render({ ...h.graph, edges: [], truncated: true });
+  assert.match(h.container.html, /0 returned at 1/);
+  assert.match(h.container.html, /No relationships returned in this direction/);
+  assert.doesNotMatch(h.container.html, /Not covered|outside its lifecycle/);
+  h.state.selectedResourceId = null;
+  h.render({ ...h.graph, truncated: true, query: { defaulted_to_representative_roots: true } });
+  assert.match(h.container.html, /Active relationships/);
+  assert.match(h.container.html, /5 returned at 1/);
+});
+
+test('empty canvas uses the same coverage-aware relationship renderer', () => {
+  const h = harness();
+  const elements = new Map(['graph-stage', 'graph-legend', 'graph-note'].map(id => [id, { style: {} }]));
+  const graph = { at: 1, nodes: [], edges: [], query: { defaulted_to_representative_roots: true } };
+  const begin = source.indexOf('function renderGraph(');
+  const renderGraphSource = source.slice(begin, source.indexOf('\nfunction ', begin + 1));
+  const deps = { state: h.state, normalizedGraph: () => graph, graphDisplayTimeNs: item => item.at,
+    renderCorrelationTimeState() {}, syncGraphScopeButton() {}, updateCorrelationState() {},
+    scopedGraph: item => item, boundedCorrelationGraph: item => item, closeCorrelationHover() {},
+    byId: id => elements.get(id), formatOffset: String, renderCorrelationList: h.render };
+  const renderGraph = new Function(...Object.keys(deps), `${renderGraphSource}; return renderGraph;`)(...Object.values(deps));
+  renderGraph();
+  assert.match(elements.get('graph-stage').innerHTML, /No correlated resources in this response/);
+  assert.match(h.container.html, /Not covered at 1/);
+  assert.doesNotMatch(h.container.html, /outside its lifecycle/);
+  graph.query = { inactive_resource_ids: ['root'] };
+  renderGraph();
+  assert.match(h.container.html, /outside its lifecycle at this moment/);
 });

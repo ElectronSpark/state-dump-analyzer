@@ -54,12 +54,13 @@ const cleanPath = (extra = {}) => ({ path_id: "active", activity: "active", sele
 function servicePopupHarness() {
   const { byId, document } = dom();
   const rect = (left, top, width, height) => ({ left, top, width, height, right: left + width, bottom: top + height });
-  let anchorRect = rect(300, 200, 210, 40), serial = 0;
+  let anchorRect = rect(300, 200, 210, 40), toolbarRect = null, serial = 0;
   document.body = byId("body");
   document.activeElement = document.body;
   document.body.append = (element) => { element.parentElement = document.body; };
   document.querySelector = (selector) => selector === ".topbar"
-    ? { getBoundingClientRect: () => rect(0, 0, 1265, 76) } : null;
+    ? { getBoundingClientRect: () => rect(0, 0, 1265, 76) }
+    : selector === ".mn-route-view-toolbar" && toolbarRect ? { getBoundingClientRect: () => toolbarRect } : null;
   const container = byId("mn-route-presentations"), card = byId("mn-route-hover-card");
   // Model the browser's replacement semantics: removed buttons disconnect and
   // focused descendants fall back to BODY, rather than remaining usable mocks.
@@ -123,7 +124,7 @@ function servicePopupHarness() {
     return trigger;
   };
   return { api, deps, state, document, byId, container, card, paths, frames, activate, rect,
-    move: (value) => { anchorRect = value; } };
+    move: (value) => { anchorRect = value; }, toolbar: (value) => { toolbarRect = value; } };
 }
 
 test("LV01: page scroll dismisses a clipped service pin, while detail scrolling retains the anchor and reading position", () => {
@@ -187,6 +188,79 @@ test("LV01: short viewports bound service details below the header and shared pa
   assert.equal(h.state.previewRoutePathId, "primary");
   assert.ok(parseFloat(h.card.style.maxHeight) > maxHeight, "a path preview does not inherit the service header offset");
   assert.ok(parseFloat(h.card.style.top) + parseFloat(h.card.style.maxHeight) <= 288);
+});
+
+test("HCR2-03: narrow service previews leave the trigger and route-mode toolbar pointer-accessible", () => {
+  for (const [height, triggerTop, toolbarTop, expectedSide] of [
+    [536, 310, 260, "below"], [536, 450, 395, "above"], [300, 180, 145, "below"],
+    [536, 65, 20, "below"], [536, 528, 470, "above"],
+  ]) {
+    const h = servicePopupHarness();
+    h.deps.window.innerWidth = 459;
+    h.deps.window.innerHeight = height;
+    const triggerRect = h.rect(56, triggerTop, 300, 40), toolbarRect = h.rect(42, toolbarTop, 372, 26);
+    h.move(triggerRect);
+    h.toolbar(toolbarRect);
+    const trigger = h.container.querySelector();
+    trigger.fire("pointerenter", { clientX: 250, clientY: triggerTop + 20 });
+    assert.equal(h.card.role, "tooltip", "the unpinned preview also leaves adjacent controls usable");
+    const bounds = () => h.rect(parseFloat(h.card.style.left), parseFloat(h.card.style.top),
+      parseFloat(h.card.style.width), Math.min(h.card.scrollHeight, parseFloat(h.card.style.maxHeight)));
+    const checkBounds = () => {
+      const cardRect = bounds();
+      assert.ok(cardRect.left >= 12 && cardRect.right <= 447);
+      assert.ok(cardRect.top >= 88 && cardRect.bottom <= height - 12);
+      for (const target of [triggerRect, toolbarRect]) {
+        assert.ok(cardRect.bottom <= target.top || cardRect.top >= target.bottom,
+          "the popup cannot intercept a pointer on the trigger or mode toolbar");
+      }
+      assert.equal(cardRect.top >= triggerRect.bottom, expectedSide === "below");
+    };
+    checkBounds();
+    trigger.fire("click", { preventDefault() {}, stopPropagation() {} });
+    const close = h.document.activeElement;
+    h.card.scrollTop = 51;
+    const writes = h.card.writes;
+    for (let index = 0; index < 3; index++) {
+      trigger.fire("pointerenter", { clientX: 250, clientY: triggerTop + 20 });
+      h.api.positionRoutePathPreview(trigger);
+      checkBounds();
+    }
+    assert.equal(h.card.role, "dialog");
+    assert.equal(h.card.writes, writes);
+    assert.equal(h.card.scrollTop, 51);
+    assert.equal(h.document.activeElement, close);
+    h.deps.window.innerWidth = 1265;
+    h.api.positionRoutePathPreview(trigger);
+    assert.equal(parseFloat(h.card.style.maxHeight), Math.min(330, height - 100),
+      "a wider viewport restores the available scrollable height without replacing details");
+  }
+});
+
+test("HCR2-03: wide service previews fit beside the complete trigger on either side", () => {
+  for (const left of [300, 800]) {
+    const h = servicePopupHarness();
+    const triggerRect = h.rect(left, 200, 210, 40);
+    h.move(triggerRect);
+    const trigger = h.container.querySelector();
+    trigger.fire("pointerenter", { clientX: left + 20, clientY: 220 });
+    const cardLeft = parseFloat(h.card.style.left), cardRight = cardLeft + parseFloat(h.card.style.width);
+    assert.ok(cardRight < triggerRect.left || cardLeft > triggerRect.right,
+      "pointer entry inside a wide trigger does not place the card over its remaining width");
+    assert.equal(h.card.style.maxHeight, "330px");
+  }
+});
+
+test("HCR2-03: a viewport without a vertical gap dismisses service details instead of covering controls", () => {
+  const h = servicePopupHarness();
+  h.deps.window.innerWidth = 459;
+  h.deps.window.innerHeight = 144;
+  h.move(h.rect(56, 100, 300, 40));
+  h.toolbar(h.rect(42, 80, 372, 20));
+  h.activate();
+  assert.equal(h.card.hidden, true);
+  assert.equal(h.state.previewRoutePresentationId, "");
+  assert.equal(h.state.routePresentationTrigger, null);
 });
 
 test("LV02: passive service re-entry preserves pinned DOM, scroll and keyboard ownership; explicit activation enters it", () => {

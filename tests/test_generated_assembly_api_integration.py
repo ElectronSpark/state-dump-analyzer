@@ -266,6 +266,48 @@ class GeneratedAssemblyApiIntegrationTests(unittest.TestCase):
                             for path in payload["paths"] for segment in path["segments"]
                         ))
 
+    def test_inventory_continuations_use_each_executing_nodes_native_clock(self) -> None:
+        # A, P1 and B observe the same UTC epoch but have unequal native offsets
+        # and uncertainty. B's 9 ms bound, not the copied source clock, is last.
+        observation = DEFAULT_SCENARIO_SOURCE.base_time_ns + 601_000_000_000
+        offsets = {node.clock_offset_ns for node in SELECTED_NODES}
+        self.assertGreater(len(offsets), 1)
+        self.assertNotEqual(_DEMO_NODE_BY_ID["node-a"].clock_offset_ns, 0)
+        for resolution_mode in ("strict", "best_effort"):
+            for source, destination in (("node-a", "node-b"), ("node-b", "node-a")):
+                row_id = (
+                    f"{source}/route/inventory/"
+                    f"generic-mpls_l3vpn-blue-vpnv4_unicast/{destination}"
+                )
+                for delay_ns, available in (
+                    (6_000_000, False), (9_000_000, True),
+                    (8_999_999, False), (10_000_000, True),
+                ):
+                    basis = {"kind": "absolute_time", "time_ns": str(observation + delay_ns)}
+                    table = self.client.post("/v1/topologies/routes/tables/query", json={
+                        "basis": basis,
+                        "filters": {"node_id": source, "vrf_id": "blue", "route_type": "mpls_l3vpn"},
+                    })
+                    self.assertEqual(table.status_code, 200, table.text)
+                    expected_row = source == "node-a" or available
+                    self.assertEqual(row_id in {r["route_entry_id"] for r in table.json()["items"]}, expected_row)
+                    for seeded in (False, True):
+                        with self.subTest(mode=resolution_mode, source=source, delay_ns=delay_ns, seeded=seeded):
+                            request = {
+                                "scenario_id": "router-to-router", "source_id": f"source:{source}",
+                                "destination_id": f"destination:{destination}", "route_type": "mpls_l3vpn",
+                                "vrf_id": "blue", "route_family": "vpnv4_unicast", "direction": "both",
+                                "basis": basis, "resolution_mode": resolution_mode,
+                            }
+                            if seeded:
+                                request["route_entry_ref"] = {"route_entry_id": row_id}
+                            result = self.client.post("/v1/topologies/routes/trace", json=request)
+                            self.assertEqual(result.status_code, 200, result.text)
+                            payload = result.json()
+                            self.assertEqual(payload["reachable"], available)
+                            for direction in ("forward", "reverse"):
+                                self.assertEqual(payload["traces"][direction]["reachable"], available)
+
     def test_typed_link_and_trace_follow_historical_carrier_status(self) -> None:
         # Author a test projection valid over the history interval so this
         # checks carrier reconstruction independently of snapshot-only routes.

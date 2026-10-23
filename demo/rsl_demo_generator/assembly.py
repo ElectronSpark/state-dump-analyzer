@@ -4047,7 +4047,11 @@ def _inventory_continuation_rows(
                         "coverage_category": "inventory_continuation",
                         "route_id": route["route_id"],
                         "path_id": route["path_id"],
-                        "observed_at_ns": route["observed_at_ns"],
+                        "observed_at_ns": str(
+                            int(route["observed_at_ns"])
+                            - source_node.clock_offset_ns
+                            + node.clock_offset_ns
+                        ),
                         "action": continuation["disposition"],
                         "disposition": continuation["disposition"],
                         "reason_code": continuation["reason_code"],

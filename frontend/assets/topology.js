@@ -8544,17 +8544,40 @@ function positionRoutePathPreview(anchor, point = null) {
     return;
   }
   const width = Math.min(430, window.innerWidth - 24);
-  const maxHeight = Math.min(330, window.innerHeight - headerBottom - 24);
-  card.style.maxHeight = `${maxHeight}px`;
-  const cardHeight = Math.min(card.scrollHeight || 330, maxHeight);
-  const anchorLeft = Number.isFinite(point?.clientX) ? point.clientX : rect.left;
-  const anchorRight = Number.isFinite(point?.clientX) ? point.clientX : rect.right;
+  let maxHeight = Math.max(0, Math.min(330, window.innerHeight - headerBottom - 24));
+  const anchorLeft = !state.previewRoutePresentationId && Number.isFinite(point?.clientX) ? point.clientX : rect.left;
+  const anchorRight = !state.previewRoutePresentationId && Number.isFinite(point?.clientX) ? point.clientX : rect.right;
   const anchorTop = Number.isFinite(point?.clientY) ? point.clientY : rect.top;
-  let left = anchorRight + 14;
-  if (left + width > window.innerWidth - 12) left = anchorLeft - width - 14;
-  left = Math.max(12, Math.min(window.innerWidth - width - 12, left));
-  const top = Math.max(headerBottom + 12, Math.min(window.innerHeight - cardHeight - 12, anchorTop - 18));
   card.style.width = `${width}px`;
+  card.style.maxHeight = `${maxHeight}px`;
+  let cardHeight = Math.min(card.scrollHeight || 330, maxHeight);
+  let left = anchorRight + 14;
+  let top;
+  if (left + width > window.innerWidth - 12 && anchorLeft - width - 14 < 12) {
+    // Side clamping would cover the trigger and its controls. Keep the service
+    // toolbar clear too, and scroll the details within the available vertical gap.
+    const toolbar = state.previewRoutePresentationId
+      ? document.querySelector(".mn-route-view-toolbar")?.getBoundingClientRect() : null;
+    const above = Math.min(state.previewRoutePresentationId ? rect.top : anchorTop, toolbar?.top ?? Infinity) - 14;
+    const below = Math.max(headerBottom + 12,
+      (!state.previewRoutePresentationId && Number.isFinite(point?.clientY) ? point.clientY : rect.bottom) + 14);
+    const aboveHeight = Math.max(0, above - headerBottom - 12);
+    const belowHeight = Math.max(0, window.innerHeight - below - 12);
+    const placeBelow = belowHeight >= cardHeight || belowHeight >= aboveHeight;
+    maxHeight = Math.min(maxHeight, placeBelow ? belowHeight : aboveHeight);
+    cardHeight = Math.min(cardHeight, maxHeight);
+    left = rect.left;
+    top = placeBelow ? below : above - cardHeight;
+  } else {
+    if (left + width > window.innerWidth - 12) left = anchorLeft - width - 14;
+    top = Math.max(headerBottom + 12, Math.min(window.innerHeight - cardHeight - 12, anchorTop - 18));
+  }
+  if (maxHeight <= 0) {
+    clearRoutePathPreview();
+    return;
+  }
+  card.style.maxHeight = `${maxHeight}px`;
+  left = Math.max(12, Math.min(window.innerWidth - width - 12, left));
   card.style.left = `${left}px`;
   card.style.top = `${top}px`;
 }

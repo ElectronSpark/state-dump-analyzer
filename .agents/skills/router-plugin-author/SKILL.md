@@ -237,6 +237,10 @@ programmatic form seeding, and superseded reads without adding plug-in hooks.
 Path-scoped service context does not establish service membership for the
 forwarding nodes. Keep its presentation separate from transit geometry; use
 declared membership evidence rather than route endpoints or labels for membership.
+Node-local forwarding timestamps belong to the executing node's clock even when
+their evidence references another device. Convert cross-node observations through
+the declared clock mapping; preserve the source evidence's independent validity.
+Regenerate persisted demo projections when their producer changes.
 
 ## Verify and finish
 
