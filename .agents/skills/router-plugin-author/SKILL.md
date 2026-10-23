@@ -84,6 +84,9 @@ An API warmup can hide browser-first-query work, and a tiny input can still incu
 fixed provider-verification costs. Reuse immutable dependency analysis, never
 an authorization or executable-trust decision; any code-object cache must use
 exact identity, bounded retention, and avoid keeping retired code alive.
+Repeated source-path resolution may be shared within one attestation only when
+its final provenance pass resolves paths freshly. Preserve independent invocation
+checks and source-byte/live-object verification; follow the map's mutation checks.
 For exact built-in type guards, use identity comparisons; membership or
 equality can invoke a custom metaclass and misclassify mutable values. Audit
 aliased type groups too. Preserve general Mapping/subclass behavior when adding
@@ -231,6 +234,9 @@ records as well as rendered glyphs; preserve active selections and exact
 drill-down. Follow the map for source identity and route seed recovery.
 The map covers lane presets, derived source marks, inferred-edge presentation,
 programmatic form seeding, and superseded reads without adding plug-in hooks.
+Path-scoped service context does not establish service membership for the
+forwarding nodes. Keep its presentation separate from transit geometry; use
+declared membership evidence rather than route endpoints or labels for membership.
 
 ## Verify and finish
 

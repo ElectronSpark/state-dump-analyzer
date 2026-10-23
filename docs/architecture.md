@@ -2554,11 +2554,13 @@ control, labels, JavaScript, or coordinate transform.
 Interaction mapping:
 
 - Wheel: vertical lane scroll.
-- Horizontal trackpad gesture or Shift+wheel: pan the exact logical time
+- Ctrl+wheel, horizontal trackpad gesture or Shift+wheel: pan the exact logical time
   window. The physical DOM surface stays at an ordinary, bounded CSS width
   (with a usable horizontally scrollable minimum on narrow screens), so deep
   zoom does not depend on a browser's maximum scroll width.
-- Ctrl/Cmd+wheel and pinch: frame-coalesced zoom about the pointer. The
+- Alt+wheel: frame-coalesced zoom about the pointer. Alt takes precedence
+  when combined with Ctrl. Browsers report pinch as Ctrl+wheel, so it follows
+  the horizontal-pan mapping. The
   ordinary wheel remains available to the page and timeline scroller.
 - Horizontal drag on a timeline track: highlight a range; the explicit brush
   mode makes the same intent persistent across gestures. Handles and numeric

@@ -6395,9 +6395,29 @@ function topologyInspectorMarkup(item, interactive = false) {
 
 function positionTopologyInspector(anchor, point = null) {
   const card = byId("mn-topology-hover-card");
-  if (!card || card.hidden || !anchor?.getBoundingClientRect) return;
+  if (!card || card.hidden) return;
+  if (!anchor?.isConnected) return clearTopologyInspector();
   const rect = anchor.getBoundingClientRect();
+  const headerBottom = Math.max(0, document.querySelector(".topbar")?.getBoundingClientRect().bottom || 0);
+  let visibleLeft = 0, visibleRight = window.innerWidth;
+  let visibleTop = headerBottom, visibleBottom = window.innerHeight;
+  const stage = anchor.closest(".mn-map-stage");
+  if (stage) {
+    const viewport = stage.getBoundingClientRect();
+    visibleLeft = Math.max(visibleLeft, viewport.left + stage.clientLeft);
+    visibleRight = Math.min(visibleRight, viewport.left + stage.clientLeft + stage.clientWidth);
+    visibleTop = Math.max(visibleTop, viewport.top + stage.clientTop);
+    visibleBottom = Math.min(visibleBottom, viewport.top + stage.clientTop + stage.clientHeight);
+  }
+  // An SVG line can have a zero-size axis while its stroke remains visible.
+  const anchorLeft = Math.max(rect.left, visibleLeft);
+  const anchorRight = Math.min(Math.max(rect.right, rect.left + 1), visibleRight);
+  const anchorTop = Math.max(rect.top, visibleTop);
+  const anchorBottom = Math.min(Math.max(rect.bottom, rect.top + 1), visibleBottom);
+  if (anchorLeft >= anchorRight || anchorTop >= anchorBottom) return clearTopologyInspector();
   const width = Math.min(card.classList.contains("is-pinned") ? 440 : 340, window.innerWidth - 24);
+  const maxHeight = Math.min(card.classList.contains("is-pinned") ? 560 : 300, window.innerHeight - headerBottom - 24);
+  card.style.maxHeight = `${maxHeight}px`;
   const measureKey = `${state.topologyInspectorKey}:${card.classList.contains("is-pinned")}:${width}`;
   if (state.topologyInspectorMeasure?.key !== measureKey) {
     card.style.width = `${width}px`;
@@ -6407,14 +6427,13 @@ function positionTopologyInspector(anchor, point = null) {
       height: Math.min(card.scrollHeight || 410, window.innerHeight - 24),
     };
   }
-  const cardHeight = Math.min(state.topologyInspectorMeasure.height, window.innerHeight - 24);
-  const anchorLeft = Number.isFinite(point?.clientX) ? point.clientX : rect.left;
-  const anchorRight = Number.isFinite(point?.clientX) ? point.clientX : rect.right;
-  const anchorTop = Number.isFinite(point?.clientY) ? point.clientY : rect.top;
-  let left = anchorRight + 14;
-  if (left + width > window.innerWidth - 12) left = anchorLeft - width - 14;
+  const cardHeight = Math.min(state.topologyInspectorMeasure.height, maxHeight);
+  const pointX = Number.isFinite(point?.clientX) ? Math.max(anchorLeft, Math.min(anchorRight, point.clientX)) : null;
+  const pointY = Number.isFinite(point?.clientY) ? Math.max(anchorTop, Math.min(anchorBottom, point.clientY)) : anchorTop;
+  let left = (pointX ?? anchorRight) + 14;
+  if (left + width > window.innerWidth - 12) left = (pointX ?? anchorLeft) - width - 14;
   left = Math.max(12, Math.min(window.innerWidth - width - 12, left));
-  const top = Math.max(12, Math.min(window.innerHeight - cardHeight - 12, anchorTop - 18));
+  const top = Math.max(headerBottom + 12, Math.min(window.innerHeight - cardHeight - 12, pointY - 18));
   card.style.left = `${left}px`;
   card.style.top = `${top}px`;
 }
@@ -6461,13 +6480,15 @@ function clearTopologyInspector(options = {}) {
   }
 }
 
-function showTopologyInspector(key, anchor, pinned = false, point = null) {
+function showTopologyInspector(key, anchor, pinned = false, point = null, focus = pinned) {
   const item = state.topologyInspectorItems.get(key);
   const card = byId("mn-topology-hover-card");
   if (!item || !card) return;
   if (state.topologyInspectorPinned && !pinned && state.topologyInspectorKey !== key) return;
   clearTimeout(state.topologyInspectorHideTimer);
   const preservePin = state.topologyInspectorKey === key && state.topologyInspectorPinned;
+  const restoreFocus = preservePin && card.contains(document.activeElement);
+  const scrollTop = preservePin ? card.scrollTop : 0;
   state.topologyInspectorKey = key;
   state.topologyInspectorPinned = Boolean(pinned || preservePin);
   state.topologyInspectorTrigger = anchor;
@@ -6478,7 +6499,7 @@ function showTopologyInspector(key, anchor, pinned = false, point = null) {
   card.setAttribute("role", state.topologyInspectorPinned ? "dialog" : "tooltip");
   card.setAttribute("aria-label", `${item.title} topology details`);
   card.innerHTML = topologyInspectorMarkup(item, state.topologyInspectorPinned);
-  card.scrollTop = 0;
+  card.scrollTop = scrollTop;
   state.topologyInspectorMeasure = null;
   const keepOpen = () => clearTimeout(state.topologyInspectorHideTimer);
   const release = () => { if (!state.topologyInspectorPinned) scheduleHideTopologyInspector(); };
@@ -6488,10 +6509,11 @@ function showTopologyInspector(key, anchor, pinned = false, point = null) {
   card.onmouseleave = release;
   card.querySelector("[data-topology-inspector-close]")?.addEventListener("click", () => clearTopologyInspector({ restoreFocus: true }));
   positionTopologyInspector(anchor, state.topologyInspectorPinned ? null : point);
+  if (card.hidden) return;
   applyTopologyRelationshipContext(key, {
     expandNodeDomains: state.topologyInspectorPinned,
   });
-  if (state.topologyInspectorPinned) card.querySelector("[data-topology-inspector-close]")?.focus({ preventScroll: true });
+  if ((focus || restoreFocus) && state.topologyInspectorPinned) card.querySelector("[data-topology-inspector-close]")?.focus({ preventScroll: true });
 }
 
 function capturePinnedTopologyInspector() {
@@ -6499,6 +6521,7 @@ function capturePinnedTopologyInspector() {
   return {
     key: state.topologyInspectorKey,
     scrollTop: byId("mn-topology-hover-card")?.scrollTop || 0,
+    focused: byId("mn-topology-hover-card")?.contains(document.activeElement) || false,
   };
 }
 
@@ -6508,7 +6531,7 @@ function restorePinnedTopologyInspector(snapshot) {
   const anchor = [...(stage?.querySelectorAll("[data-topology-inspect-key]") || [])]
     .find((element) => element.dataset.topologyInspectKey === snapshot.key);
   if (!anchor) return;
-  showTopologyInspector(snapshot.key, anchor, true);
+  showTopologyInspector(snapshot.key, anchor, true, null, snapshot.focused);
   const card = byId("mn-topology-hover-card");
   if (card) card.scrollTop = snapshot.scrollTop;
 }
@@ -7156,6 +7179,7 @@ function applyGraphTransform(stageId, viewKey) {
     stage.dataset.graphDetail = detailMode;
     view.detailMode = detailMode;
   }
+  if (viewKey === "topology" && state.topologyInspectorTrigger) positionTopologyInspector(state.topologyInspectorTrigger);
 }
 
 function scheduleGraphTransform(stageId, viewKey) {
@@ -7382,6 +7406,7 @@ function setupGraphViewport({ stageId, viewKey, layoutKey, modelPositions, stora
       element.style.left = `${point.x}px`;
       element.style.top = `${point.y}px`;
       updatePosition?.(positionKey);
+      if (viewKey === "topology" && state.topologyInspectorTrigger) positionTopologyInspector(state.topologyInspectorTrigger);
     };
     element.onpointerdown = (event) => {
       if (event.button !== 0 || event.target.closest("a, select, .mn-route-node-paths")) return;
@@ -8262,73 +8287,47 @@ function allPathNodeMarkup(node, position, paths) {
   </article>`;
 }
 
-function routePresentationGroups(paths, nodes = selectedResultNodes()) {
+function routePresentationGroups(paths) {
   const groups = new Map();
   for (const path of paths || []) {
     for (const layer of routePresentationLayers(path, "overlay")) {
-      // A band scoped to the full path is the only descriptor that may
-      // enclose forwarding geometry. Step/span/resource descriptors remain
-      // preserved for their own anchors instead of being misdrawn as paths.
+      // Path context does not declare participation by every forwarding node.
+      // Step/span/resource descriptors retain their own anchors.
       if (layer.scope !== "path" || layer.style !== "band") continue;
       const groupId = layer.group_id || layer.presentation_id;
       if (!groups.has(groupId)) groups.set(groupId, {
         group_id: groupId,
         layers: [],
         paths: [],
-        nodes: [],
       });
       const group = groups.get(groupId);
       group.layers.push(layer);
       if (!group.paths.some((item) => item.path_id === path.path_id)) group.paths.push(path);
-      for (const node of routeNodeSequence(path, nodes)) {
-        if (!group.nodes.some((item) => item.key === node.key)) group.nodes.push(node);
-      }
     }
   }
   return [...groups.values()];
 }
 
-function routePresentationOverlayMarkup(paths, nodes, positions, dimensions, nodeBoxes) {
-  return routePresentationGroups(paths, nodes).map((group) => {
-    if (!group.nodes.length) return "";
-    const bounds = group.nodes.reduce((result, node) => {
-      const point = positions.get(node.key);
-      const box = nodeBoxes.get(node.key) || { width: MAP_NODE_FALLBACK_WIDTH, height: MAP_NODE_FALLBACK_HEIGHT };
-      if (!point) return result;
-      result.minX = Math.min(result.minX, point.x - box.width / 2);
-      result.minY = Math.min(result.minY, point.y - box.height / 2);
-      result.maxX = Math.max(result.maxX, point.x + box.width / 2);
-      result.maxY = Math.max(result.maxY, point.y + box.height / 2);
-      return result;
-    }, { minX: Number.POSITIVE_INFINITY, minY: Number.POSITIVE_INFINITY, maxX: Number.NEGATIVE_INFINITY, maxY: Number.NEGATIVE_INFINITY });
-    if (!Number.isFinite(bounds.minX)) return "";
-    const paddingX = 34;
-    const paddingTop = 50;
-    const paddingBottom = 30;
-    const x = Math.max(12, bounds.minX - paddingX);
-    const y = Math.max(12, bounds.minY - paddingTop);
-    const right = Math.min(dimensions.width - 12, bounds.maxX + paddingX);
-    const bottom = Math.min(dimensions.height - 12, bounds.maxY + paddingBottom);
-    const width = Math.max(120, right - x);
-    const height = Math.max(88, bottom - y);
+function renderRoutePresentations(paths) {
+  const container = byId("mn-route-presentations");
+  const groups = routePresentationGroups(paths);
+  if (state.previewRoutePresentationId) clearRoutePresentationPreview();
+  container.hidden = !groups.length;
+  container.innerHTML = groups.map((group) => {
     const layer = group.layers[0];
     const pathIds = group.paths.map((path) => path.path_id);
     const statuses = [...new Set(group.layers.map((item) => item.status).filter(Boolean))];
     const statusClass = statuses.length === 1 ? ` is-${safeClass(statuses[0])}` : statuses.length ? " is-mixed" : "";
     const label = layer.label || "Service context";
-    const chipLabel = `SERVICE OVERLAY · ${label}`;
-    const chipWidth = Math.min(Math.max(156, chipLabel.length * 5.8 + 28), Math.max(156, width - 24));
-    const aria = `${label}; service context around ${group.paths.length} candidate path${group.paths.length === 1 ? "" : "s"}; not a forwarding hop`;
-    return `<g class="mn-route-presentation-overlay is-${safeClass(layer.style_role)}${statusClass}" data-route-presentation-id="${escapeHtml(group.group_id)}" data-route-path-ids="${escapeHtml(JSON.stringify(pathIds))}">
-      <rect class="mn-route-presentation-surface" x="${x}" y="${y}" width="${width}" height="${height}" rx="24"></rect>
-      <g class="mn-route-presentation-trigger" tabindex="0" role="button" aria-label="${escapeHtml(aria)}" data-route-presentation-trigger="${escapeHtml(group.group_id)}" transform="translate(${x + 12} ${y + 10})">
-        <rect width="${chipWidth}" height="24" rx="8"></rect>
-        <text x="11" y="15">${escapeHtml(chipLabel)}</text>
-        <title>${escapeHtml(`${aria}. Hover or focus for plug-in details.`)}</title>
-      </g>
-      <text class="mn-route-presentation-caption" x="${x + width - 12}" y="${y + 25}" text-anchor="end">CONTEXT · NOT A HOP</text>
-    </g>`;
+    const aria = `${label}; context for ${group.paths.length} candidate path${group.paths.length === 1 ? "" : "s"}. Show service details`;
+    return `<div class="mn-route-presentation-overlay is-${safeClass(layer.style_role)}${statusClass}" data-route-presentation-id="${escapeHtml(group.group_id)}" data-route-path-ids="${escapeHtml(JSON.stringify(pathIds))}">
+      <button type="button" class="mn-route-presentation-trigger" aria-label="${escapeHtml(aria)}" aria-haspopup="dialog" aria-controls="mn-route-hover-card" data-route-presentation-trigger="${escapeHtml(group.group_id)}">
+        <small>SERVICE CONTEXT</small><strong>${escapeHtml(label)}</strong>
+      </button>
+      <span class="mn-route-presentation-caption">Path context does not imply device participation</span>
+    </div>`;
   }).join("");
+  bindRoutePresentationElements(container);
 }
 
 function routeBoundaryTagMarkup(segment, geometry, pathId = "") {
@@ -8337,7 +8336,7 @@ function routeBoundaryTagMarkup(segment, geometry, pathId = "") {
   const point = quadraticEdgePoint(geometry, 0.5);
   const label = String(presentation.label);
   const width = Math.min(128, Math.max(62, label.length * 5.4 + 18));
-  return `<g class="mn-route-layer-tag" aria-hidden="true" data-route-layer-path-id="${escapeHtml(pathId)}" transform="translate(${point.x} ${point.y})">
+  return `<g class="mn-route-layer-tag" aria-hidden="true" data-route-layer-path-id="${escapeHtml(pathId)}" data-route-tokens="${routeTokensAttribute(segment.component_tokens)}" data-route-focus-targets="${routeFocusTargetsAttribute(segment.highlight_target_ids)}" transform="translate(${point.x} ${point.y})">
     <rect x="${-width / 2}" y="-10" width="${width}" height="20" rx="7"></rect>
     <text text-anchor="middle" dominant-baseline="central">${escapeHtml(label)}</text>
     <title>${escapeHtml(presentation.detail || label)}</title>
@@ -8509,7 +8508,7 @@ function applyOverviewPathEmphasis() {
     element.classList.toggle("is-route-suppressed", Boolean(activePathId && !matches));
     if (element.matches("[data-route-overview-node]")) applyRouteOverviewNodeQuality(element, matches ? activePathId : "");
   });
-  scope?.querySelectorAll("[data-route-layer-path-id], [data-route-presentation-id]").forEach((element) => {
+  document.querySelectorAll("#mn-route-map-stage [data-route-layer-path-id], #mn-route-presentations [data-route-presentation-id]").forEach((element) => {
     let memberships = [];
     if (element.dataset.routeLayerPathId) memberships = [element.dataset.routeLayerPathId];
     else {
@@ -8662,7 +8661,6 @@ function renderAllPathEdges(paths, nodes, positions, dimensions, nodeBoxes) {
     <marker id="mn-route-cycle-all" markerWidth="15" markerHeight="15" refX="12" refY="7.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M11,3 A5,5 0 1 0 11,12 M10,1 L13,3 L10,5"></path></marker>
     <marker id="mn-route-policy-all" markerWidth="14" markerHeight="14" refX="7" refY="7" orient="auto" markerUnits="userSpaceOnUse"><path d="M2,2 L12,12 M12,2 L2,12 M1,7 L13,7"></path></marker>
   </defs>`];
-  markup.push(routePresentationOverlayMarkup(paths, nodes, positions, dimensions, nodeBoxes));
   for (const edge of edges) {
     const anchor = edge.sourceNode || edge.targetNode;
     const sourcePosition = edge.sourceNode ? positions.get(edge.sourceNode.key) : null;
@@ -8711,13 +8709,13 @@ function renderAllPathEdges(paths, nodes, positions, dimensions, nodeBoxes) {
     markup.push(routeBoundaryTagMarkup(edge.segment, geometry, edge.path.path_id));
   }
   svg.innerHTML = markup.join("");
-  bindRoutePresentationElements(svg);
   bindOverviewPathElements(svg);
   bindRouteCorrelationElements(svg);
 }
 
 function renderAllPathsRouteMap() {
   const paths = state.routeTrace?.paths || [];
+  renderRoutePresentations(paths);
   const layer = byId("mn-route-node-layer");
   const empty = byId("mn-route-map-empty");
   const nodes = allPathGraphNodes(paths, selectedResultNodes());
@@ -8775,8 +8773,8 @@ function renderAllPathsRouteMap() {
   const note = byId("mn-route-map-note");
   title.textContent = `${routeDirectionLabel(state.activeRouteDirection)} · all ${paths.length} candidates`;
   const controlPlaneOnlyPaths = paths.filter(pathIsControlPlaneOnly);
-  const presentationCount = routePresentationGroups(paths, nodes).length;
-  const graphSemantics = `Device cards are L3 resolution points and arrows are outer L1/L2 boundaries.${presentationCount ? ` ${presentationCount} tinted service context${presentationCount === 1 ? " is" : "s are"} an overlay, not a hop.` : ""}`;
+  const presentationCount = routePresentationGroups(paths).length;
+  const graphSemantics = `Device cards are L3 resolution points and arrows are outer L1/L2 boundaries.${presentationCount ? " Service context is shown separately; transit devices need not participate in it." : ""}`;
   const directionalDifference = routeDirectionalDifference();
   const directionNote = directionalDifference
     ? ` Active forward and return paths differ: ${directionalDifference.detail}.`
@@ -8810,6 +8808,7 @@ function renderFocusedRouteMap() {
     return;
   }
   const routePath = selectedRoutePath();
+  renderRoutePresentations([routePath].filter(Boolean));
   const pathDirectionalDifference = routePathMatchesDirectionalDifference(routePath, directionalDifference)
     ? directionalDifference
     : null;
@@ -8837,7 +8836,7 @@ function renderFocusedRouteMap() {
       ? ` Active forward and return paths differ: ${pathDirectionalDifference.detail}. Amber marks direction-only components when no stronger path-local fault takes precedence.`
       : "";
     title.textContent = `${routeDirectionLabel(state.activeRouteDirection)} · ${routePath.label}`;
-    note.textContent = `${labels[0] || "unresolved start"} → ${labels.at(-1) || "unresolved target"} · ${pathStatusSummary(routePath)}.${endpointContext} Only the focused outer L1-L3 path is drawn.${presentationCount ? " The tinted service context is attached to it, not inserted as a hop." : ""}${directionNote}`;
+    note.textContent = `${labels[0] || "unresolved start"} → ${labels.at(-1) || "unresolved target"} · ${pathStatusSummary(routePath)}.${endpointContext} Only the focused outer L1-L3 path is drawn.${presentationCount ? " Service context is shown separately; transit devices need not participate in it." : ""}${directionNote}`;
   }
   renderNodeGraph({
     nodes,
@@ -9067,11 +9066,8 @@ function renderEdges(nodes, positions, dimensions, nodeBoxes, options = {}) {
     <marker id="mn-route-gap" markerWidth="12" markerHeight="12" refX="6" refY="6" orient="auto" markerUnits="userSpaceOnUse"><path d="M3,2 L3,10 M9,2 L9,10"></path></marker>
     <marker id="mn-route-dead" markerWidth="14" markerHeight="14" refX="7" refY="7" orient="auto" markerUnits="userSpaceOnUse"><path d="M2,2 L12,12 M12,2 L2,12"></path></marker>
     <marker id="mn-route-cycle" markerWidth="15" markerHeight="15" refX="12" refY="7.5" orient="auto" markerUnits="userSpaceOnUse"><path d="M11,3 A5,5 0 1 0 11,12 M10,1 L13,3 L10,5"></path></marker>
-    <marker id="mn-route-policy" markerWidth="14" markerHeight="14" refX="7" refY="7" orient="auto" markerUnits="userSpaceOnUse"><path d="M2,2 L12,12 M12,2 L2,12 M1,7 L13,7"></path></marker>
+    <marker id="mn-route-policy-stop" markerWidth="14" markerHeight="14" refX="7" refY="7" orient="auto" markerUnits="userSpaceOnUse"><path d="M2,2 L12,12 M12,2 L2,12 M1,7 L13,7"></path></marker>
   </defs>`);
-  if (showRoute && routePath) {
-    paths.push(routePresentationOverlayMarkup([routePath], nodes, positions, dimensions, nodeBoxes));
-  }
   for (const { link, sourceNode, targetNode, pairKey } of topologyEdges) {
     const geometry = curvedEdgeGeometry(
       positions.get(sourceNode.key),
@@ -9144,7 +9140,7 @@ function renderEdges(nodes, positions, dimensions, nodeBoxes, options = {}) {
         : policyBlocked ? " mn-route-policy-stop is-policy-blocked"
           : "";
     const marker = cycleClosing ? "mn-route-cycle"
-      : policyBlocked ? "mn-route-policy"
+      : policyBlocked ? "mn-route-policy-stop"
         : terminal ? "mn-route-dead"
           : segment.unresolved || unresolvedEnd ? "mn-route-gap" : "mn-route-arrow";
     paths.push(`<path aria-hidden="true" ${attributes} class="mn-route-edge-hit${terminalClass}" d="${geometry.d}"></path>`);
@@ -9152,7 +9148,6 @@ function renderEdges(nodes, positions, dimensions, nodeBoxes, options = {}) {
     paths.push(routeBoundaryTagMarkup(segment, geometry, routePath.path_id));
   }
   svg.innerHTML = paths.join("");
-  bindRoutePresentationElements(svg);
   bindRouteCorrelationElements(svg);
   bindRoutePacketGraphElements(svg);
 }
@@ -9412,6 +9407,10 @@ function routeTableCompletenessLabel(value) {
 function routeTableFilterOptions() {
   const snapshot = state.routeTableSnapshot;
   if (!snapshot) return;
+  // Browser history can restore input values without input/change events.
+  // Reconcile text controls with the same applied state as the select options.
+  byId("mn-route-table-search").value = state.routeTableFilters.search;
+  byId("mn-route-table-destination-filter").value = state.routeTableFilters.destination;
   const entries = snapshot.items;
   const optionMarkup = (values, selected, allLabel) => `<option value="">${escapeHtml(allLabel)}</option>${values
     .map((value) => `<option value="${escapeHtml(value)}" ${value === selected ? "selected" : ""}>${escapeHtml(titleCase(value))}</option>`).join("")}`;
@@ -10123,6 +10122,7 @@ function bindControls() {
     syncUrl();
   });
   byId("mn-route-table-filters").addEventListener("submit", (event) => event.preventDefault());
+  window.addEventListener("pageshow", () => requestAnimationFrame(renderRouteTables));
   const routeTableFilterBindings = {
     "mn-route-table-search": "search",
     "mn-route-table-node-filter": "node",
@@ -10251,6 +10251,12 @@ function bindControls() {
     resizeObserver.observe(byId("mn-map-stage"));
     resizeObserver.observe(byId("mn-route-map-stage"));
   }
+  document.addEventListener("scroll", (event) => {
+    const card = byId("mn-topology-hover-card");
+    if (state.topologyInspectorTrigger && !card?.contains(event.target)) {
+      scheduleTopologyInspectorPosition(state.topologyInspectorTrigger);
+    }
+  }, { capture: true, passive: true });
 }
 
 function bootstrapFromCapabilities(capabilities) {

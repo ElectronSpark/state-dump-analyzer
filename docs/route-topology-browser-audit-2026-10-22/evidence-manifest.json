@@ -1,0 +1,128 @@
+{
+  "baseline_commit": "29c445a9211af56b18c3ca3910f06ca91b4dab6b",
+  "source_directory": ".runtime/route-topology-audit-2026-10-22",
+  "archive_members": [
+    {
+      "name": "19-topology-pan-geometry.json",
+      "bytes": 1975,
+      "sha256": "c0c6f082c48d39838106971baecadc7fe1ac3174474ac8da978b1eed8cae6598"
+    },
+    {
+      "name": "20-topology-anchor-clipped.json",
+      "bytes": 889,
+      "sha256": "b4b9618597b749fe8e569bc50511da5272c75c10f1bb01a185166076c6ec38b7"
+    },
+    {
+      "name": "56-policy-marker-collision.json",
+      "bytes": 1193,
+      "sha256": "e25388ecc4b5c7afad0d2cdc4fa71b9898e7a779460b6e5a859dddf7e766a52a"
+    },
+    {
+      "name": "57-direction-label-overlap.json",
+      "bytes": 3515,
+      "sha256": "911352cf7ba03e966d803e573c1fb32568d79da48eb0820b53649c67cf1bbfba"
+    },
+    {
+      "name": "68-vpn-drag-geometry.json",
+      "bytes": 3438,
+      "sha256": "abcc514d996c436216c469ab32e18d67c3526f85870380a700604a49ced83cba"
+    },
+    {
+      "name": "70-vpn-reset-geometry.json",
+      "bytes": 1990,
+      "sha256": "df393396900adfb8796c7f35270d8c09209f727d27ccf2bb46a9c0e492d06ba2"
+    },
+    {
+      "name": "71-vpn-layer-transform.json",
+      "bytes": 2949,
+      "sha256": "c3ddc5b6488215863152a36a18601b06023861838fbfb7b49c25b428da75e3bd"
+    },
+    {
+      "name": "browser-console.json",
+      "bytes": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "name": "browser.jsonl",
+      "bytes": 27734157,
+      "sha256": "012670165e8514d740a1398cdda9a6722e316e0ac55ff4e42e953bf2a6c7f912"
+    },
+    {
+      "name": "demo.stderr.log.audit-delta",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "demo.stdout.log.audit-delta",
+      "bytes": 23240,
+      "sha256": "1db2503e0bef2210702ef24772ae0929c4799e04134e325cdbd93353da8d24a1"
+    },
+    {
+      "name": "log-baseline.json",
+      "bytes": 543,
+      "sha256": "cb5f02e061dd9ac6db9ad2853c5e8e3daff43945569b8aa646a70a9c72cc573f"
+    },
+    {
+      "name": "operation-performance-alignment.json",
+      "bytes": 2201,
+      "sha256": "dd69db3aa5bd9ee76d4af501a801300f82780027c9d921b16a2481d32a63e5cf"
+    },
+    {
+      "name": "operation-timings.jsonl",
+      "bytes": 1107,
+      "sha256": "e8dce7771784317cc508df199d00f090db66ac843720ca261dcd46a6c1bd7b13"
+    },
+    {
+      "name": "performance-summary.json",
+      "bytes": 2178,
+      "sha256": "703bee3bd4c038f442a19aae45cd83e805c19cbe995518844217feebafd057f1"
+    },
+    {
+      "name": "performance.jsonl",
+      "bytes": 208660,
+      "sha256": "163af89eb2014f6cce32197ff5f810c1338615a288c0bd262ac430317c50ea57"
+    }
+  ],
+  "screenshots": [
+    {
+      "name": "20-topology-anchor-clipped.png",
+      "bytes": 66122,
+      "sha256": "89c38bffb8b64d6b88e845a157662d850b6f2d0007f991e20a0272d424744bcc"
+    },
+    {
+      "name": "22-pin-obscures-navigation.png",
+      "bytes": 97878,
+      "sha256": "a5ff6a2831c1a806df1d061be5687020b24307a30467f5d203b0a2adad17739c"
+    },
+    {
+      "name": "53-policy-focused.png",
+      "bytes": 98537,
+      "sha256": "4a09c3d30cad0791615c2503c67a2ee9b49bd205001edc3245c0c568d2c09eef"
+    },
+    {
+      "name": "54-policy-all-paths.png",
+      "bytes": 80289,
+      "sha256": "943965754825a17c1ef1fa025f40e7e88de3d019a391e6c8c226911b45231a42"
+    },
+    {
+      "name": "57-direction-label-overlap.png",
+      "bytes": 92168,
+      "sha256": "b2c872e35c02421525a559ccd2d1edc2fc93135c1c31b679246d36d56fec73e3"
+    },
+    {
+      "name": "68-vpn-detached-attachments.png",
+      "bytes": 68536,
+      "sha256": "bb3d6286425afbadd61ac69bd897f3f14449086cf8be00d9dcd2642b0266af6a"
+    },
+    {
+      "name": "90-final-route.png",
+      "bytes": 86786,
+      "sha256": "daa3c27146d76d2cc479ef3053bc2433baf07079cd5276f7400b8e6af522a72a"
+    }
+  ],
+  "archive": {
+    "name": "evidence.zip",
+    "bytes": 3429534,
+    "sha256": "69fb97e0c1aec9d41c610c6f879c0f078eeaba94511a4192b8406b03dcae4def"
+  }
+}

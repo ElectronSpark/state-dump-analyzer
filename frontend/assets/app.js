@@ -12265,7 +12265,7 @@ function timelineWheel(event) {
     event.preventDefault();
     return;
   }
-  if (event.ctrlKey || event.metaKey) {
+  if (event.altKey) {
     const track = event.target.closest?.(".lane-track")
       || byId("timeline-content").querySelector(".lane-track");
     const anchorNs = track
@@ -12280,7 +12280,7 @@ function timelineWheel(event) {
       : 1;
   const horizontalDelta = Math.abs(event.deltaX) > Math.abs(event.deltaY)
     ? event.deltaX * deltaUnit
-    : event.shiftKey ? event.deltaY * deltaUnit : 0;
+    : event.ctrlKey || event.shiftKey ? event.deltaY * deltaUnit : 0;
   if (!Number.isFinite(horizontalDelta) || horizontalDelta === 0) return;
   event.preventDefault();
   scheduleTimelinePan(horizontalDelta);
@@ -12305,7 +12305,7 @@ function scheduleTimelinePan(deltaPx) {
 }
 
 function scheduleTimelineZoom(event, { anchorNs = null } = {}) {
-  if (!(event.ctrlKey || event.metaKey)) return false;
+  if (!event.altKey) return false;
   const deltaUnit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16
     : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? byId("timeline-scroll").clientHeight
       : 1;

@@ -51,6 +51,90 @@ function dom() {
 const cleanPath = (extra = {}) => ({ path_id: "active", activity: "active", selection: "selected",
   completeness: "complete", consistency: "consistent", disposition: "forward", segments: [], ...extra });
 
+test("path service context stays outside forwarding geometry and retains its details and path selection", () => {
+  const { byId, document } = dom();
+  const container = byId("mn-route-presentations");
+  const state = { selectedRoutePathId: "alternate", routeGraphMode: "all", previewRoutePathId: "" };
+  const strip = byId("blue-strip"), otherStrip = byId("red-strip"), trigger = byId("blue-trigger");
+  strip.dataset.routePathIds = '["primary","alternate"]';
+  otherStrip.dataset.routePathIds = '["other"]';
+  trigger.dataset.routePresentationTrigger = "service:blue";
+  container.querySelectorAll = () => container.hidden ? [] : [trigger];
+  byId("mn-route-map-stage").querySelectorAll = () => [];
+  document.querySelectorAll = () => [strip, otherStrip];
+  const previews = [];
+  const api = load(["renderRoutePresentations", "routePresentationGroups", "routePresentationPreviewMarkup", "applyOverviewPathEmphasis"], {
+    state, document, byId, window: {},
+    showRoutePresentationPreview: (...args) => previews.push(args),
+    routeNodeSequence: () => { throw new Error("path context must not infer participating devices"); },
+  });
+  const layer = { presentation_id: "service", group_id: "service:blue", role: "overlay", scope: "path", style: "band",
+    label: "Blue service", facts: [{ label: "Routing context", value: "blue" }] };
+  const paths = ["primary", "alternate"].map((path_id) => ({ path_id, presentations: [layer],
+    node_sequence: ["pe-a", "transit-without-service", "pe-b"] }));
+  const original = JSON.stringify(paths);
+  api.renderRoutePresentations(paths);
+  assert.equal(container.hidden, false);
+  assert.equal((container.innerHTML.match(/data-route-presentation-trigger=/g) || []).length, 1);
+  assert.doesNotMatch(container.innerHTML, /<(svg|rect|path)\b|transit-without-service|data-route-focus-targets/);
+  assert.match(container.innerHTML, /Path context does not imply device participation/);
+  const group = api.routePresentationGroups(paths)[0];
+  assert.match(api.routePresentationPreviewMarkup(group), /Routing context/);
+  trigger.fire("keydown", { key: "Enter", preventDefault() {} });
+  assert.deepEqual(previews[0], ["service:blue", trigger, true]);
+  api.applyOverviewPathEmphasis();
+  assert.equal(strip.classList.contains("is-route-pinned"), true);
+  assert.equal(otherStrip.classList.contains("is-route-suppressed"), true);
+  state.selectedRoutePathId = "";
+  api.applyOverviewPathEmphasis();
+  assert.equal(otherStrip.classList.contains("is-route-suppressed"), false);
+  assert.equal(JSON.stringify(paths), original, "context rendering preserves the physical path and descriptors");
+  api.renderRoutePresentations([{ path_id: "non-service", presentations: [{ ...layer, scope: "step" }] }]);
+  assert.equal(container.hidden, true);
+  assert.equal(container.innerHTML, "", "a subsequent path without service context removes the strip");
+});
+
+test("route boundary labels follow their own link and resolution-step highlights", () => {
+  const { byId, document } = dom();
+  const state = { routeHoverTokens: new Set(), routeHoverExact: false,
+    routeTokenElements: new Set(), routeFocusElements: new Set(),
+    routeTokenIndex: new Map(), routeFocusIndex: new Map(),
+    routeCorrelatedElements: new Set(), routeDimmedElements: new Set() };
+  const api = load(["routeBoundaryTagMarkup", "bindRouteCorrelationElements", "clearRouteHover"],
+    { state, document, quadraticEdgePoint: () => ({ x: 10, y: 20 }) });
+  const labels = ["west", "east"].map((id) => {
+    const markup = api.routeBoundaryTagMarkup({ graph_presentation: { label: id, role: "outer-boundary" },
+      component_tokens: [`segment:${id}`], highlight_target_ids: [`target:${id}`] }, {}, "path");
+    const element = byId(`label-${id}`);
+    for (const [attribute, key] of [["data-route-tokens", "routeTokens"], ["data-route-focus-targets", "routeFocusTargets"]]) {
+      const encoded = markup.match(new RegExp(`${attribute}="([^"]*)"`))?.[1];
+      assert.ok(encoded, `rendered label carries ${attribute}`);
+      element.dataset[key] = encoded.replaceAll("&quot;", '"');
+    }
+    return element;
+  });
+  const controls = ["link-west", "step-east"].map((id, index) => {
+    const element = byId(id);
+    element.dataset = { ...labels[index].dataset, routeKind: index ? "resolution-step" : "route-segment", routeId: id };
+    return element;
+  });
+  const elements = [...labels, ...controls];
+  elements.forEach((element) => {
+    element.closest = () => scope;
+    element.hasAttribute = (name) => name === "data-route-focus-targets";
+  });
+  const scope = { querySelectorAll: () => elements, contains: (element) => elements.includes(element) };
+  api.bindRouteCorrelationElements(scope);
+  for (const [index, control] of controls.entries()) {
+    control.focus();
+    assert.equal(labels[index].classList.contains("is-route-correlated"), true);
+    assert.equal(labels[1 - index].classList.contains("is-route-dimmed"), true);
+  }
+  api.clearRouteHover();
+  assert.ok(elements.every((element) => !element.classList.contains("is-route-correlated")
+    && !element.classList.contains("is-route-dimmed")));
+});
+
 test("MN001/MN002: normalize gaps and unknown proof flags without inventing disagreement", () => {
   const api = load(["normalizeRouteTrace", "normalizeRouteSegment", "pathStatusSummary", "routeTraceOutcome"], { state: { query: { nodes: [] } } });
   for (const consistency of [{ state: "incomplete", consistent: false }, { state: "best_effort_with_gap", consistent: false },
@@ -180,6 +264,75 @@ function installControlBlock(marker, endMarker, deps) {
   assert.ok(start >= 0 && end > start);
   new Function(...Object.keys(deps), source.slice(start, end))(...Object.values(deps));
 }
+
+test('history-restored route controls reconcile with applied filters after pageshow and ordinary renders', () => {
+  const { byId, document } = dom();
+  const row = (prefix) => ({ node_id: 'a', prefix, next_hops: [], forwarding_actions: [], protocol: 'static' });
+  const state = { routeTableFilters: { search: '', node: '', vrf: '', family: '', type: '', protocol: '', destination: '' },
+    routeTableSnapshot: { groups: [{ node_id: 'a', label: 'A' }], items: [row('packet-mtu'), row('10.255.0.0/24')] }, routeTableOpenNodes: new Set() };
+  let visible = [], pageshow;
+  const frames = [];
+  const api = load(['routeTableFilterOptions', 'routeTableEntryMatchesFilters'], { state, byId });
+  const renderRouteTables = () => {
+    api.routeTableFilterOptions();
+    visible = state.routeTableSnapshot.items.filter(api.routeTableEntryMatchesFilters);
+  };
+  byId('mn-route-table-search').tagName = byId('mn-route-table-destination-filter').tagName = 'INPUT';
+  installControlBlock('byId("mn-route-table-filters").addEventListener', '  byId("mn-route-direction-tabs")', {
+    state, byId, document, renderRouteTables,
+    window: { addEventListener(type, callback) { assert.equal(type, 'pageshow'); pageshow = callback; } },
+    requestAnimationFrame: (callback) => frames.push(callback),
+  });
+  renderRouteTables();
+  pageshow({ persisted: false });
+  // Browser form restoration follows pageshow, without emitting input/change.
+  byId('mn-route-table-search').value = 'packet-mtu';
+  byId('mn-route-table-destination-filter').value = 'packet-mtu';
+  frames.shift()();
+  assert.equal(byId('mn-route-table-search').value, '');
+  assert.equal(byId('mn-route-table-destination-filter').value, '');
+  assert.equal(visible.length, 2);
+  byId('mn-route-table-search').value = 'packet-mtu';
+  byId('mn-route-table-search').fire('input');
+  assert.equal(visible.length, 1);
+  pageshow({ persisted: true });
+  frames.shift()();
+  assert.equal(byId('mn-route-table-search').value, 'packet-mtu', 'BFCache retains the existing applied state');
+  assert.equal(visible.length, 1);
+  byId('mn-route-table-destination-filter').value = 'absent';
+  byId('mn-route-table-destination-filter').fire('input');
+  assert.equal(visible.length, 0);
+  byId('mn-route-table-clear').fire('click');
+  assert.equal(visible.length, 2);
+  assert.equal(byId('mn-route-table-destination-filter').value, '');
+});
+
+test('focused policy-blocked edges reference their SVG marker without colliding with form controls', () => {
+  const svg = { setAttribute() {}, innerHTML: '' };
+  const nodes = [{ key: 'a', node_id: 'a' }, { key: 'b', node_id: 'b' }];
+  const path = { path_id: 'blocked', label: 'Blocked', segments: [{ source: nodes[0], target: nodes[1], segment_id: 'stop', status: 'blocked' }] };
+  const api = load(['renderEdges'], { state: {}, byId: () => svg,
+    routeForwardingSegments: (value) => value.segments,
+    findRouteOccurrence: (ref) => nodes.find((node) => ref.node_id === node.node_id),
+    findNodeForRef: (ref) => nodes.find((node) => ref.node_id === node.node_id), selectedResultNodes: () => nodes,
+    routeSegmentIsTerminal: () => false, routeSegmentIsCycleClosing: () => false, routeSegmentIsPolicyBlocked: () => true,
+    curvedEdgeGeometry: () => ({ d: 'M0,0 L100,0' }),
+    routeQualityClasses: () => [], routeSegmentQualityState: () => ({}), routePolicyPresentation: () => ({ label: 'Policy blocked' }),
+    nodeLabelForRef: (ref) => ref.node_id, pathStatusSummary: () => 'Blocked', routeTokensAttribute: () => '', routeFocusTargetsAttribute: () => '',
+    packetRefsAttribute: () => '', routeBoundaryTagMarkup: () => '',
+    bindRouteCorrelationElements() {}, bindRoutePacketGraphElements() {},
+  });
+  api.renderEdges(nodes, new Map(nodes.map((node, index) => [node.key, { x: index * 100, y: 0 }])),
+    { width: 400, height: 300 }, new Map(), { showTopology: false, showRoute: true, routePath: path });
+  const marker = /class="mn-route-edge [^"]*is-policy-blocked" marker-end="url\(#([^)]*)\)"/.exec(svg.innerHTML)?.[1];
+  assert.ok(marker);
+  assert.ok(svg.innerHTML.includes(`<marker id="${marker}"`));
+  const page = readFileSync(new URL('../pages/topology.html', import.meta.url), 'utf8');
+  assert.ok(page.includes('id="mn-route-policy"'), 'resolution select remains available');
+  for (const [, markerId] of svg.innerHTML.matchAll(/<marker id="([^"]+)"/g)) {
+    assert.ok(!page.includes(`id="${markerId}"`), `marker ${markerId} must not resolve to an HTML control`);
+  }
+});
 
 test("MN003: actual direction handler applies declared Return and Forward contexts without changing flow", () => {
   const h = controls();

@@ -3887,8 +3887,10 @@ is unavailable. `anchor_resources` bind step or span presentations by
 identity, never by parsing text.
 
 Presentations do not add hops, replace the outer L1-L3 path, or affect path
-selection and reachability. Labels and `facts` remain plug-in-owned display
-data: the server and client must not infer VPN, MPLS, SRv6, EVPN, VLAN, or other
+selection and reachability. Path-scoped context and correlation anchors do not
+establish service membership for transit nodes. Labels and `facts` remain
+plug-in-owned display data: the server and client must not infer VPN, MPLS,
+SRv6, EVPN, VLAN, or other
 protocol semantics from them. Styles are mapped by the core UI theme; CSS,
 HTML, coordinates, and executable renderer content are not accepted.
 

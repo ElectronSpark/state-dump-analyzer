@@ -1847,6 +1847,115 @@ class PluginIdentityRuntimeImportTests(unittest.TestCase):
         finally:
             self._cleanup_modules(temporary, module_name)
 
+    def test_source_paths_share_resolution_only_within_each_attestation(self) -> None:
+        module_name = "_rda_identity_shared_source_resolution"
+        temporary, (module,) = self._import_modules(
+            {module_name: (
+                "def helper(value):\n    return value + 1\n"
+                "def callback():\n    return helper(1)\n"
+            )},
+            module_name,
+        )
+        module = cast(ModuleType, module)
+        source_path = Path(cast(str, module.__file__)).resolve(strict=True)
+        actual_resolve = Path.resolve
+        resolutions: list[Path] = []
+
+        def counted_resolve(path: Path, *args: object, **kwargs: object) -> Path:
+            if path == source_path:
+                resolutions.append(path)
+            return actual_resolve(path, *args, **kwargs)
+
+        try:
+            for fingerprint in (
+                lambda: executable_module_target_fingerprint(
+                    module_name, "callback", module.callback
+                ),
+                lambda: executable_callable_fingerprint(module.callback),
+            ):
+                with patch.object(Path, "resolve", new=counted_resolve):
+                    first = fingerprint()
+                    first_count = len(resolutions)
+                    self.assertEqual(first_count, 2)
+                    self.assertEqual(first, fingerprint())
+                    self.assertEqual(len(resolutions), 2 * first_count)
+                resolutions.clear()
+        finally:
+            self._cleanup_modules(temporary, module_name)
+
+    def test_reused_source_resolution_rechecks_retargeted_path(self) -> None:
+        module_name = "_rda_identity_source_path_retarget"
+        temporary, (module,) = self._import_modules(
+            {module_name: "def callback():\n    return 'A'\n"},
+            module_name,
+        )
+        module = cast(ModuleType, module)
+        source_path = Path(cast(str, module.__file__)).resolve(strict=True)
+        replacement = source_path.with_name("replacement.py")
+        replacement.write_bytes(source_path.read_bytes())
+        actual_resolve = Path.resolve
+        actual_declared = plugin_identity._declared_code_objects
+        retargeted = False
+
+        def retarget_after_source_read(**kwargs: object) -> tuple[CodeType, ...]:
+            nonlocal retargeted
+            result = actual_declared(**kwargs)
+            retargeted = True
+            return result
+
+        def retargeted_resolve(path: Path, *args: object, **kwargs: object) -> Path:
+            # Model a junction/symlink target changing after its source was read.
+            # Real package-alias traversal is covered in test_plugin_identity.
+            if retargeted and path == source_path:
+                return replacement
+            return actual_resolve(path, *args, **kwargs)
+
+        try:
+            for fingerprint in (
+                lambda: executable_module_target_fingerprint(
+                    module_name, "callback", module.callback
+                ),
+                lambda: executable_callable_fingerprint(module.callback),
+            ):
+                retargeted = False
+                with (
+                    patch.object(Path, "resolve", new=retargeted_resolve),
+                    patch.object(plugin_identity, "_declared_code_objects", new=retarget_after_source_read),
+                    self.assertRaisesRegex(
+                        PluginExecutableIdentityError,
+                        "source provenance changed while fingerprinting",
+                    ),
+                ):
+                    fingerprint()
+                self.assertTrue(retargeted)
+        finally:
+            self._cleanup_modules(temporary, module_name)
+
+    def test_source_resolution_cache_is_bounded_and_exact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            paths = [Path(directory) / f"source-{index}.py" for index in range(3)]
+            for path in paths:
+                path.write_text("value = 1\n", encoding="utf-8")
+            cache: dict[tuple[str, ...], Path | None] = {}
+            with patch.object(plugin_identity, "_MAX_TARGET_CODE_OBJECTS", 2):
+                for path in paths:
+                    self.assertEqual(
+                        plugin_identity._resolved_source_path((str(path),), _cache=cache),
+                        path.resolve(strict=True),
+                    )
+            self.assertEqual(len(cache), 2)
+
+            class UnhashablePath(str):
+                __hash__ = None
+
+            self.assertEqual(
+                plugin_identity._resolved_source_path(
+                    (UnhashablePath(str(paths[0])),), _cache=cache
+                ),
+                paths[0].resolve(strict=True),
+            )
+            self.assertEqual(len(cache), 2)
+
     def test_declared_source_deletion_during_attestation_fails_closed(self) -> None:
         module_name = "_rda_identity_declared_source_delete"
         temporary, (module,) = self._import_modules(

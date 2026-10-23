@@ -223,7 +223,8 @@ right by 10% of the visible duration. The adjacent readout shows the window's
 start and end; buttons disable at the capture boundaries. Panning preserves
 the zoom, selected time, selected duration, and visible lanes.
 
-Horizontal two-finger scrolling or Shift+wheel also pans. Click a resource
+Ctrl+wheel pans time, Alt+wheel zooms at the pointer, and wheel alone scrolls
+lanes vertically. Horizontal two-finger scrolling or Shift+wheel also pans. Click a resource
 lane, event, timeline background, or Earlier/Later button to use the direction
 keys: Left/Right pans time and Up/Down scrolls the lanes. Holding an arrow keeps
 moving; horizontal repeats are frame-coalesced using the same bounded refresh

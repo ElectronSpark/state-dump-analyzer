@@ -159,6 +159,14 @@ the same core callers as cold execution. Use `tests.test_plugin_identity`,
 `tests.test_plugin_identity_runtime_imports`, `tests.test_capability_router`,
 and `tests.test_provider_execution_boundaries` for these boundaries.
 
+Repeated path resolution within one attestation uses a bounded cache of exact
+string candidate tuples. Its final provenance pass resolves each distinct path
+again using a separate temporary map; neither map crosses fingerprint calls or
+before/after invocation checks. Preserve per-object/module comparisons and fresh
+source-byte/file-identity reads. Test path retargeting after source inspection,
+same-byte replacement, deletion, live mutation and uncached string subclasses.
+Measure filesystem calls separately from provider work before adding result caches.
+
 For archive changes, retain traversal of trailing members and rejection of
 unsafe names, duplicate members, nonregular entries, size/hash mismatches,
 and incorrect projection identity. Validate reordered archives as well as
@@ -482,6 +490,13 @@ plus resource ID is not unique when the same resource appears in several tree
 branches. Restore focus without stealing it from a newer user action, and keep
 popups anchored to the same instance.
 
+Passive pinned-inspector restoration must not repeat activation's focus transfer.
+Type multiple characters into a graph filter with a pin open, then repeat without
+the pin. Inspect the active element after each redraw. For Fabric inspectors,
+reconcile visibility on graph pan/zoom/drag and page scroll against that graph's
+viewport and sticky controls, including partial visibility and dismissed-card
+non-revival after Fit.
+
 Selection can synchronously replace a timeline marker before its activation
 handler opens a popup. Reacquire the anchor through the existing instance key
 after selection, including single source and review markers, without falling
@@ -623,6 +638,22 @@ Form resets restore values but not dynamically assigned validity constraints.
 Keep conditional visibility and native validation synchronized on initial load,
 reset, reconnect and clear. Exercise a real submit path after those transitions;
 a controller-only test cannot detect a hidden required field blocking submission.
+Browser history may restore text without dispatching input events. After Back,
+wait for reconstruction and compare all visible filters with the actual rows;
+reconcile controls with the existing authoritative state rather than introducing
+a second persistence scheme. Include clear/retype and a BFCache-style retained
+state control. For SVG/HTML graph overlays, compare their rendered dimensions
+and coordinate transforms in compact layouts as well as after drag, Reset and
+1:1. Check SVG fragment IDs against the whole document, and long route statuses
+against direction-label rectangles in both path modes.
+Compare correlation from graph nodes/edges and resolution steps in both trace
+directions, including decorative edge labels. An executing hop's member must
+come from the validated node context even when its evidence cites another node;
+preserve that evidence's own attribution rather than relabeling it as local.
+Keep path-scoped service context visually separate from forwarding nodes:
+a service carried over a path does not establish that every transit node
+participates in that service. Correlation anchors and path endpoints are not
+membership evidence. Check context details and path emphasis in both graph modes.
 
 Read failures must settle local pending-operation state without replaying a
 mutation or letting an old request overwrite a newer generation. Verify that a

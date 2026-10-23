@@ -1518,6 +1518,10 @@ class MultiNodeRouteService:
             str(item["node_id"]): item
             for item in query_checked(projection["forwarding_decisions"])
         }
+        members_by_node = {
+            str(node["node_id"]): str(node["member_id"])
+            for node in query_checked(route_evidence["nodes"])
+        }
         for path in query_checked(paths):
             candidate_id = str(path.get("generated_candidate_id") or "")
             if not candidate_id:
@@ -1583,11 +1587,9 @@ class MultiNodeRouteService:
                     for item in query_checked(evidence_ids)
                     if item in resources
                 ]
-                member_id = (
-                    str(evidence_records[0]["member_id"])
-                    if evidence_records
-                    else f"member:{node_id}"
-                )
+                # Evidence may belong to another node. The executing hop's
+                # identity comes from its selected topology context instead.
+                member_id = members_by_node.get(node_id, f"member:{node_id}")
                 resource_refs = [
                     dict(item["resource_ref"])
                     for item in query_checked(evidence_records)

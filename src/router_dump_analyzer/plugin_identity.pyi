@@ -93,6 +93,7 @@ class _TargetIdentityBudget:
     owned_static_descriptors: dict[int, list[_OwnedStaticDescriptor]] = field(default_factory=dict)
     module_source_paths: dict[int, tuple[ModuleType, object, object, object, Path | None]] = field(default_factory=dict)
     object_source_paths: dict[int, tuple[object, str | None, Path | None]] = field(default_factory=dict)
+    resolved_source_paths: dict[tuple[str, ...], Path | None] = field(default_factory=dict)
     derived_cache_slots: list[tuple[ModuleType, str, object]] = field(default_factory=list)
     allow_runtime_closures: bool = ...
     allow_unbound_source_objects: bool = ...

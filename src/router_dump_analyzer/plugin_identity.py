@@ -259,6 +259,9 @@ class _TargetIdentityBudget:
     object_source_paths: dict[int, tuple[object, str | None, Path | None]] = field(
         default_factory=dict
     )
+    resolved_source_paths: dict[tuple[str, ...], Path | None] = field(
+        default_factory=dict
+    )
     derived_cache_slots: list[tuple[ModuleType, str, object]] = field(
         default_factory=list
     )
@@ -657,7 +660,10 @@ def _module_file_source_path(
     registry_name = getattr(getattr(module, "__spec__", None), "name", None)
     module_file = getattr(module, "__file__", None)
     result = (
-        _resolved_source_path((module_file,))
+        _resolved_source_path(
+            (module_file,),
+            _cache=budget.resolved_source_paths if budget is not None else None,
+        )
         if isinstance(module_file, str) and module_file
         else None
     )
@@ -690,7 +696,13 @@ def _object_source_path(
         source = inspect.getsourcefile(value)
     except (OSError, TypeError):
         source = None
-    result = _resolved_source_path((source,)) if source else None
+    result = (
+        _resolved_source_path(
+            (source,),
+            _cache=budget.resolved_source_paths if budget is not None else None,
+        )
+        if source else None
+    )
     if budget is not None:
         budget.object_source_paths[object_key] = (value, source, result)
     return result
@@ -2643,7 +2655,9 @@ def _declared_runtime_code_identity(
         budget.allow_unbound_source_objects or allow_frozen_module
     ) and all(code.co_filename.startswith("<frozen ") for code in runtime_codes)
     for code in runtime_codes:
-        code_source = _resolved_source_path((code.co_filename,))
+        code_source = _resolved_source_path(
+            (code.co_filename,), _cache=budget.resolved_source_paths
+        )
         if not frozen_runtime and (code_source is None or code_source != source_path):
             raise PluginExecutableIdentityError(
                 "module target contains code without exact source provenance"
@@ -8486,11 +8500,15 @@ def _verify_object_identity_caches(budget: _TargetIdentityBudget) -> None:
 
 
 def _verify_source_path_caches(budget: _TargetIdentityBudget) -> None:
+    # Re-resolve every distinct path from this attestation.  Functions in one
+    # source file share filesystem provenance, not their live object checks.
+    # Never reuse traversal resolutions for this final verification pass.
+    verified_paths: dict[tuple[str, ...], Path | None] = {}
     for module, module_name, registry_name, module_file, source_path in tuple(
         budget.module_source_paths.values()
     ):
         current_source_path = (
-            _resolved_source_path((module_file,))
+            _resolved_source_path((module_file,), _cache=verified_paths)
             if isinstance(module_file, str) and module_file
             else None
         )
@@ -8513,11 +8531,16 @@ def _verify_source_path_caches(budget: _TargetIdentityBudget) -> None:
         except (OSError, TypeError):
             current = None
         current_source_path = (
-            _resolved_source_path((current,)) if current else None
+            _resolved_source_path((current,), _cache=verified_paths) if current else None
         )
         if current != source or current_source_path != source_path:
             raise PluginExecutableIdentityError(
                 "module target object source provenance changed while fingerprinting"
+            )
+    for candidates, source_path in tuple(budget.resolved_source_paths.items()):
+        if _resolved_source_path(candidates, _cache=verified_paths) != source_path:
+            raise PluginExecutableIdentityError(
+                "module target source provenance changed while fingerprinting"
             )
     for (module_name, source_path), cached in tuple(
         budget.declared_code_cache.items()
@@ -8812,9 +8835,20 @@ def _module_source_path(
     return _resolved_source_path(tuple(candidates))
 
 
-def _resolved_source_path(candidates: tuple[str, ...]) -> Path | None:
+def _resolved_source_path(
+    candidates: tuple[str, ...],
+    *,
+    _cache: dict[tuple[str, ...], Path | None] | None = None,
+) -> Path | None:
     """Resolve the first regular source file without accepting sourceless caches."""
 
+    cacheable = (
+        type(candidates) is tuple
+        and all(type(candidate) is str for candidate in candidates)
+    )
+    if _cache is not None and cacheable and candidates in _cache:
+        return _cache[candidates]
+    result = None
     for candidate in candidates:
         path = Path(candidate)
         if path.suffix.lower() in {".pyc", ".pyo"}:
@@ -8838,8 +8872,11 @@ def _resolved_source_path(candidates: tuple[str, ...]) -> Path | None:
         except OSError:
             continue
         if resolved.is_file():
-            return resolved
-    return None
+            result = resolved
+            break
+    if _cache is not None and cacheable and len(_cache) < _MAX_TARGET_CODE_OBJECTS:
+        _cache[candidates] = result
+    return result
 
 
 def _executable_scope(module_name: str, source_path: Path) -> _ExecutableScope:

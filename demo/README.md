@@ -109,6 +109,9 @@ VPNs use tinted service-domain nodes and logical attachments, not physical
 point-to-point links. Even the two-member Red VPN remains a service node.
 Hover a service or attachment to inspect the plug-in's identity, evidence and
 calculation. P1/P2 carry transport but are not advertised as service members.
+In route traces, a separate service-context strip describes the service carried
+over the forwarding path. It does not enclose the routers or imply that transit
+nodes know the VPN; the topology service domains retain membership evidence.
 The matching key includes service type, VRF and route target (plus VNI for
 EVPN); matching prefixes alone never merge the Blue and Red services.
 

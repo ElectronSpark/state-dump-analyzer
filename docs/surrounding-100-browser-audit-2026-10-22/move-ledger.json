@@ -1,0 +1,1051 @@
+{
+  "schema_version": 1,
+  "status": "final-reviewed-through-100-and-controls",
+  "scope": "Moves 1–100 plus separately identified followup observations; reviewed from saved browser AX records and supplied manual observations.",
+  "classification_note": "no-defect-observed is limited to the stated observation, not a general feature pass. Known defects from the preceding audit are not counted again merely because their components were visited. AX alone cannot validate visual geometry. Browser-tool timing is not isolated server latency.",
+  "entries": [
+    {
+      "id": 1,
+      "action": "Jump to Route trace from the retained VPN graph",
+      "observed_result": "Route trace section retained nested-VPN Forward result and focused-path view.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=1"
+      ]
+    },
+    {
+      "id": 2,
+      "action": "Choose packet-mtu-drop",
+      "observed_result": "Scenario and default IPv4/default-VRF endpoints changed; prior trace cleared.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=2"
+      ]
+    },
+    {
+      "id": 3,
+      "action": "Select Both directions",
+      "observed_result": "Directions control changed to Both directions.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=3"
+      ]
+    },
+    {
+      "id": 4,
+      "action": "Run MTU-drop trace",
+      "observed_result": "Both direction tabs reported dropped; Forward evidence reported MTU exceeded after encapsulation.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=4"
+      ]
+    },
+    {
+      "id": 5,
+      "action": "Select the terminal MTU-drop transition",
+      "observed_result": "The only transition was selected: PE-A encapsulation 1490 to 1510 B, DROP / MTU EXCEEDED.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=5"
+      ]
+    },
+    {
+      "id": 6,
+      "action": "Close details, then select the first MTU-drop transition",
+      "observed_result": "The same single transition was selected again; this did not exercise two distinct packet transitions.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=6",
+        "followups.jsonl:packet-close-check",
+        "followups.jsonl:after-first-transition-close"
+      ]
+    },
+    {
+      "id": 7,
+      "action": "Switch MTU-drop graph to All paths",
+      "observed_result": "All paths selected; Forward remained selected and dropped.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=7"
+      ]
+    },
+    {
+      "id": 8,
+      "action": "Select Return in All paths",
+      "observed_result": "Return selected and reported dropped; All paths remained selected.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=8"
+      ]
+    },
+    {
+      "id": 9,
+      "action": "Select Forward again",
+      "observed_result": "Forward selected; dropped outcome retained.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=9"
+      ]
+    },
+    {
+      "id": 10,
+      "action": "Switch back to Focused path",
+      "observed_result": "Focused path selected and MTU-drop evidence restored.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=10"
+      ]
+    },
+    {
+      "id": 11,
+      "action": "Choose packet-mtu-exact",
+      "observed_result": "Exact-MTU scenario selected; prior result invalidated.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=11"
+      ]
+    },
+    {
+      "id": 12,
+      "action": "Run exact-MTU trace; reconnect after browser-tool timeout",
+      "observed_result": "Recovered capture showed a resolved complete observed path with three transitions and Deliver / MTU fits. No precise trace duration can be inferred from this recovered record.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=12",
+        "followups.jsonl:reconnect-after-timeout"
+      ]
+    },
+    {
+      "id": 13,
+      "action": "Select exact-MTU delivery transition",
+      "observed_result": "PE-B transition3 selected, decapsulation1500 to 1480 B, DELIVER / MTU FITS.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=13"
+      ]
+    },
+    {
+      "id": 14,
+      "action": "Expand advanced trace options",
+      "observed_result": "Advanced options expanded with observed steering, hops 64, recursion 16.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=14"
+      ]
+    },
+    {
+      "id": 15,
+      "action": "Choose packet-forced-steering",
+      "observed_result": "Forced-steering scenario selected, initially observed steering.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=15"
+      ]
+    },
+    {
+      "id": 16,
+      "action": "Select Force alternate path through P2",
+      "observed_result": "Advertised force-alternate-p2 profile selected.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=16"
+      ]
+    },
+    {
+      "id": 17,
+      "action": "Run forced Both-directions trace",
+      "observed_result": "Complete alternative returned, visibly Counterfactual, with three transitions and delivery.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=17"
+      ]
+    },
+    {
+      "id": 18,
+      "action": "Change to Return only",
+      "observed_result": "Return-only control selected; previous result invalidated.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=18"
+      ]
+    },
+    {
+      "id": 19,
+      "action": "Run Return-only forced trace",
+      "observed_result": "Return result showed complete counterfactual alternate P2 path and delivery.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=19"
+      ]
+    },
+    {
+      "id": 20,
+      "action": "Restore Both directions",
+      "observed_result": "Both directions selected.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=20"
+      ]
+    },
+    {
+      "id": 21,
+      "action": "Set maximum hops to 1",
+      "observed_result": "Hops control showed 1 and prior trace cleared.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=21"
+      ]
+    },
+    {
+      "id": 22,
+      "action": "Run constrained-hop trace",
+      "observed_result": "Traversal limit reached / Hop limit reached / Incomplete appeared; counterfactual packet evidence ended Continuation Required.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=22"
+      ]
+    },
+    {
+      "id": 23,
+      "action": "Restore maximum hops to 64",
+      "observed_result": "Hops control showed 64 and result invalidated.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=23"
+      ]
+    },
+    {
+      "id": 24,
+      "action": "Run legal recursion 0; subsequently try invalid recursion -1",
+      "observed_result": "Zero is the advertised legal minimum and ran. First -1 pointer-submit attempt unexpectedly navigated to PE-A; attribution unresolved. After recovery, native keyboard submission retained -1 on Fabric and did not execute a trace.",
+      "classification": "pending/limited",
+      "evidence": [
+        "moves.jsonl:id=24",
+        "followups.jsonl:24-zero-is-valid-minimum",
+        "followups.jsonl:24-adjust-invalid-recursion-minus-one",
+        "followups.jsonl:24-unexpected-navigation",
+        "followups.jsonl:24-invalid-keyboard-submit",
+        "24-invalid-before-submit.png",
+        "24-invalid-recursion-navigation.png"
+      ]
+    },
+    {
+      "id": 25,
+      "action": "Recover Fabric, restore recursion 16, run trace",
+      "observed_result": "Earlier retry encountered another timeout/navigation anomaly. Final capture showed restored Both-directions forced trace with complete Return alternative and delivery; intermediate pointer navigation is not established as an application defect.",
+      "classification": "pending/limited",
+      "evidence": [
+        "moves.jsonl:id=25",
+        "followups.jsonl:25-trace-retry-timeout",
+        "followups.jsonl:25-recover-fabric"
+      ]
+    },
+    {
+      "id": 26,
+      "action": "Jump to Route tables and search packet-mtu",
+      "observed_result": "Visible routes 8/693; search value packet-mtu.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=26"
+      ]
+    },
+    {
+      "id": 27,
+      "action": "Filter matching route rows to PE-A",
+      "observed_result": "Visible routes 4/693.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=27"
+      ]
+    },
+    {
+      "id": 28,
+      "action": "Filter to Default VRF",
+      "observed_result": "Four matching rows remained.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=28"
+      ]
+    },
+    {
+      "id": 29,
+      "action": "Filter to IPv4 Unicast family",
+      "observed_result": "Four matching rows remained.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=29"
+      ]
+    },
+    {
+      "id": 30,
+      "action": "Select Static protocol/source",
+      "observed_result": "Combined filters produced0/693 rows; empty combination is not a defect.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=30"
+      ]
+    },
+    {
+      "id": 31,
+      "action": "Clear Static protocol filter, then expand first row's Plug-in details",
+      "observed_result": "Four rows returned; the selected Plug-in details disclosure expanded.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=31",
+        "followups.jsonl:31-restore-protocol-before-disclosure"
+      ]
+    },
+    {
+      "id": 32,
+      "action": "Collapse the same Plug-in details disclosure",
+      "observed_result": "Disclosure returned to collapsed state.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=32"
+      ]
+    },
+    {
+      "id": 33,
+      "action": "Set destination filter to not-a-real-prefix-100",
+      "observed_result": "Visible routes 0/693 with No routes match the current filters.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=33"
+      ]
+    },
+    {
+      "id": 34,
+      "action": "Clear route filters",
+      "observed_result": "Search cleared and Visible routes 693/693 restored.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=34"
+      ]
+    },
+    {
+      "id": 35,
+      "action": "Search packet-forced-steering",
+      "observed_result": "Four matching routes displayed.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=35"
+      ]
+    },
+    {
+      "id": 36,
+      "action": "Use first PE-A forced-steering route row for trace",
+      "observed_result": "Seed reset Forward only and endpoints; selected row was explicitly the inactive counterfactual P2 candidate, so forced P2 steering is expected.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=36"
+      ]
+    },
+    {
+      "id": 37,
+      "action": "Run seeded route",
+      "observed_result": "Forward forced-P2 counterfactual result matched selected row; this is not proof of stale steering retention.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=37"
+      ]
+    },
+    {
+      "id": 38,
+      "action": "Jump to inter-node Links",
+      "observed_result": "Links section reached with existing route state retained.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=38"
+      ]
+    },
+    {
+      "id": 39,
+      "action": "Open link endpoint in node workspace",
+      "observed_result": "Node URL opened and loading UI appeared; cold endpoint initialization had not completed before move 40 Back. Full node workflow not validated here.",
+      "classification": "pending/limited",
+      "evidence": [
+        "moves.jsonl:id=39",
+        "followups.jsonl:39-endpoint-settled"
+      ]
+    },
+    {
+      "id": 40,
+      "action": "Browser Back to Fabric during endpoint loading",
+      "observed_result": "Fabric reconstructed and eventually settled by move 45. Long process-wide CPU/loading observation exists, but earlier outstanding work prevents attributing it solely to Back/reconstruction. The route-table field/state mismatch noticed here was subsequently confirmed in a controlled post-100 followup.",
+      "classification": "pending/limited",
+      "evidence": [
+        "moves.jsonl:id=40",
+        "followups.jsonl:40-restoration-pending",
+        "move40-reconstruction-observation.json",
+        "moves.jsonl:id=45"
+      ]
+    },
+    {
+      "id": 41,
+      "action": "Jump to Fabric while reconstruction remained pending",
+      "observed_result": "Fabric anchor reached; capture still showed reconstruction and loading route capabilities, so this is not a settled reconstruction check.",
+      "classification": "pending/limited",
+      "evidence": [
+        "moves.jsonl:id=41"
+      ]
+    },
+    {
+      "id": 42,
+      "action": "Expand How to read while loading",
+      "observed_result": "Guide disclosure expanded and held focus.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=42"
+      ]
+    },
+    {
+      "id": 43,
+      "action": "Collapse How to read",
+      "observed_result": "Guide disclosure collapsed and held focus.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=43"
+      ]
+    },
+    {
+      "id": 44,
+      "action": "Fill device filter with P1 while reconstruction was pending",
+      "observed_result": "Field showed P1 and retained focus; filtering a settled graph was not established by this capture.",
+      "classification": "pending/limited",
+      "evidence": [
+        "moves.jsonl:id=44"
+      ]
+    },
+    {
+      "id": 45,
+      "action": "Choose Highlight attention",
+      "observed_result": "Attention selected; reconstruction had settled. Retained route-search text with 693/693 unfiltered results was noticed here and later confirmed as the separately recorded browser-Back filter defect.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=45"
+      ]
+    },
+    {
+      "id": 46,
+      "action": "Choose Highlight incomplete",
+      "observed_result": "Incomplete selected; other highlight choices unselected.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=46"
+      ]
+    },
+    {
+      "id": 47,
+      "action": "Restore Highlight all",
+      "observed_result": "Highlight all selected.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=47"
+      ]
+    },
+    {
+      "id": 48,
+      "action": "Clear device text filter",
+      "observed_result": "Filter field empty; all-device highlighting retained.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=48"
+      ]
+    },
+    {
+      "id": 49,
+      "action": "Expand device list using Show all",
+      "observed_result": "Button became expanded Show less; original plan incorrectly called this collapse.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=49"
+      ]
+    },
+    {
+      "id": 50,
+      "action": "Collapse device list using Show less",
+      "observed_result": "Button became collapsed Show all; original plan incorrectly called this expand.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=50"
+      ]
+    },
+    {
+      "id": 51,
+      "action": "Select Underlay plane",
+      "observed_result": "Underlay selected; five detail layers retained; graph readout76%.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=51"
+      ]
+    },
+    {
+      "id": 52,
+      "action": "Open Elements picker",
+      "observed_result": "Picker expanded with five of six detail layers enabled.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=52"
+      ]
+    },
+    {
+      "id": 53,
+      "action": "Enable Subinterfaces",
+      "observed_result": "All preset / six of six layers shown.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=53"
+      ]
+    },
+    {
+      "id": 54,
+      "action": "Disable Interfaces",
+      "observed_result": "Custom preset / five of six layers; checkbox unchecked.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=54"
+      ]
+    },
+    {
+      "id": 55,
+      "action": "Disable Subnets",
+      "observed_result": "Custom preset / four of six layers; checkbox unchecked.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=55"
+      ]
+    },
+    {
+      "id": 56,
+      "action": "Disable External networks",
+      "observed_result": "Custom preset / three of six layers; external network excluded.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=56"
+      ]
+    },
+    {
+      "id": 57,
+      "action": "Disable VLANs",
+      "observed_result": "Custom preset / two of six layers.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=57"
+      ]
+    },
+    {
+      "id": 58,
+      "action": "Disable LAGs",
+      "observed_result": "Custom preset / one of six layers; separate LAG component controls removed.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=58"
+      ]
+    },
+    {
+      "id": 59,
+      "action": "Disable Subinterfaces, the last remaining detail layer",
+      "observed_result": "Custom preset / zero of six; Connectivity only. Connection labels and device/domain identities remain intentionally; AX and source do not establish a compact fallback. Detailed visual junction geometry was not independently verified in this ledger.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=59"
+      ]
+    },
+    {
+      "id": 60,
+      "action": "Restore Compact preset and close picker",
+      "observed_result": "Two layers, subnets plus interfaces, restored; separate physical-interface component controls returned.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=60"
+      ]
+    },
+    {
+      "id": 61,
+      "action": "Select P1 in Underlay graph",
+      "observed_result": "Header Open target and spotlight changed to P1.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=61"
+      ]
+    },
+    {
+      "id": 62,
+      "action": "Set graph to 1:1",
+      "observed_result": "Zoom readout changed from 76% to 100%.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=62"
+      ]
+    },
+    {
+      "id": 63,
+      "action": "Focus graph and press Left repeatedly",
+      "observed_result": "Original capture retained graph focus and 100% zoom but did not record transform geometry. Later controlled repetition confirmed ten Left presses changed translation x from -130.4 to 229.6 (+360 px), with y fixed at -82 and scale 1.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=63",
+        "followups.jsonl:pan-control-before",
+        "followups.jsonl:pan-control-left",
+        "pan-control-transforms.json"
+      ],
+      "original_classification": "pending/limited",
+      "followup_resolution": "Resolved for keyboard pan translation by saved matrix evidence; this does not certify every clipping or popup interaction."
+    },
+    {
+      "id": 64,
+      "action": "Press Down repeatedly in graph",
+      "observed_result": "Original capture retained graph focus and 100% zoom but did not record transform geometry. Later controlled repetition confirmed ten Down presses changed translation y from -82 to -442 (-360 px), with x fixed at 229.6 and scale 1.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=64",
+        "followups.jsonl:pan-control-left",
+        "followups.jsonl:pan-control-down",
+        "pan-control-transforms.json"
+      ],
+      "original_classification": "pending/limited",
+      "followup_resolution": "Resolved for keyboard pan translation by saved matrix evidence; this does not certify every clipping or popup interaction."
+    },
+    {
+      "id": 65,
+      "action": "Use graph keyboard Fit",
+      "observed_result": "Zoom readout returned to 76%; graph retained focus. Later controlled Fit captured matrix scale 0.757062 and translation (44.0294, 15.661), corroborating the rounded readout.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=65",
+        "followups.jsonl:pan-control-fit",
+        "pan-control-transforms.json"
+      ]
+    },
+    {
+      "id": 66,
+      "action": "Switch to VPN plane",
+      "observed_result": "VPN selected with 83% readout; prior P1 focus retained.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=66"
+      ]
+    },
+    {
+      "id": 67,
+      "action": "Attempt pointer selection of PE-B VPN node",
+      "observed_result": "Header and spotlight remained P1. Intended PE-B activation was not demonstrated; tool targeting versus product behavior remains unresolved.",
+      "classification": "pending/limited",
+      "evidence": [
+        "moves.jsonl:id=67",
+        "followups.jsonl:67-control-vpn",
+        "followups.jsonl:67-keyboard-selection-control"
+      ],
+      "followup_resolution": "Later keyboard activation in VPN view successfully changed header and spotlight to PE-B. The original pointer miss remains unattributed; keyboard success does not retrospectively validate that pointer operation."
+    },
+    {
+      "id": 68,
+      "action": "Return to Underlay",
+      "observed_result": "Underlay selected with 76% readout and P1 focus retained; this does not retrospectively prove move 67 worked.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=68"
+      ]
+    },
+    {
+      "id": 69,
+      "action": "Reconstruct at -360 seconds",
+      "observed_result": "Initially pending; followup confirmed applied -360 s. Subsequent extra pin/filter keyboard sequence found a new focus defect recorded separately.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=69",
+        "followups.jsonl:69-reconstruction-progress"
+      ]
+    },
+    {
+      "id": 70,
+      "action": "Move reconstruction slider to oldest boundary",
+      "observed_result": "Pending display distinguished selected -720 s from graph -360 s; followup confirmed applied -720 s.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=70",
+        "followups.jsonl:70-oldest-applied"
+      ]
+    },
+    {
+      "id": 71,
+      "action": "Move reconstruction slider to newest boundary",
+      "observed_result": "Pending display distinguished selected 0 s from graph -720 s; followup confirmed applied 0 s.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=71",
+        "followups.jsonl:71-newest-applied"
+      ]
+    },
+    {
+      "id": 72,
+      "action": "Reconstruct with Strict clock policy",
+      "observed_result": "Followup showed Strict and applied 0 s; incomplete/uncertain coverage stayed explicit.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=72",
+        "followups.jsonl:72-strict-applied"
+      ]
+    },
+    {
+      "id": 73,
+      "action": "Switch to absolute-time basis",
+      "observed_result": "Absolute UTC input exposed, value1759680719996000000.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=73"
+      ]
+    },
+    {
+      "id": 74,
+      "action": "Submit absolute timestamp not-a-time",
+      "observed_result": "Inline rejection: Absolute time must be an integer nanosecond timestamp; last applied graph retained with Controls changed disclosure.",
+      "classification": "expected-rejection",
+      "evidence": [
+        "moves.jsonl:id=74",
+        "74-invalid-time.png"
+      ]
+    },
+    {
+      "id": 75,
+      "action": "Submit absolute timestamp1759680719996000000",
+      "observed_result": "Followup confirmed applied absolute UTC1759680719.996 s.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=75",
+        "followups.jsonl:75-absolute-applied"
+      ]
+    },
+    {
+      "id": 76,
+      "action": "Restore relative watermark0 and Best effort, reconstruct",
+      "observed_result": "Followup confirmed applied 0 s and Best effort.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=76",
+        "followups.jsonl:76-relative-restored"
+      ]
+    },
+    {
+      "id": 77,
+      "action": "Uncheck PE-B without applying reconstruction",
+      "observed_result": "Selection showed 9/10 and Controls changed; previous graph remained explicitly last applied.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=77"
+      ]
+    },
+    {
+      "id": 78,
+      "action": "Attempt trace while PE-B excluded from selection",
+      "observed_result": "Endpoint PE-B outside reconstructed device set message requested selecting device and reconstructing; no valid trace returned.",
+      "classification": "expected-rejection",
+      "evidence": [
+        "moves.jsonl:id=78",
+        "followups.jsonl:78-member-excluded-state"
+      ]
+    },
+    {
+      "id": 79,
+      "action": "Restore PE-B and reconstruct",
+      "observed_result": "Ten members restored; later followup confirmed Global topology API and applied 0 s.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=79",
+        "followups.jsonl:79-members-restored"
+      ]
+    },
+    {
+      "id": 80,
+      "action": "Open PE-A node workspace",
+      "observed_result": "Initial record and progress followup were still loading; later readiness followup reported all 1,250,005 normalized events and7,510 resources loaded. Node interaction coverage belongs to moves81 onward.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=80",
+        "followups.jsonl:80-node-load-progress",
+        "followups.jsonl:80-node-readiness"
+      ]
+    },
+    {
+      "id": 81,
+      "action": "Open resource lane picker",
+      "observed_result": "Picker expanded with 13 selected resource lanes out of 7,510 and two log lanes.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=81"
+      ]
+    },
+    {
+      "id": 82,
+      "action": "Search lanes for DTE000009, then correct to canonical dte-000009",
+      "observed_result": "Initial compact label had no matches; canonical hyphenated resource label found one DTE. The initial miss is not a product failure.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=82",
+        "followups.jsonl:82-canonical-label-correction"
+      ]
+    },
+    {
+      "id": 83,
+      "action": "Enable dte-000009 lane and close picker",
+      "observed_result": "Canonical DTE checkbox became checked; subsequent capture showed 14 lanes.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=83",
+        "followups.jsonl:83-picker-closed"
+      ]
+    },
+    {
+      "id": 84,
+      "action": "Activate known DTE failure event from issue summary",
+      "observed_result": "Selected Dte Next Hop Dependency Change, node-a/scale-event-01000759 at +600.075 s; followup settled.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=84",
+        "followups.jsonl:84-event-settled"
+      ]
+    },
+    {
+      "id": 85,
+      "action": "Inspect selected event/resource in dependency graph",
+      "observed_result": "Dependency-graph section reached, selected failure retained, and incoming/outgoing resource context was shown.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=85"
+      ]
+    },
+    {
+      "id": 86,
+      "action": "Zoom timeline in once",
+      "observed_result": "Zoom changed from 1 to 1.5; Back view enabled.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=86",
+        "followups.jsonl:86-zoom-controls"
+      ]
+    },
+    {
+      "id": 87,
+      "action": "Use timeline Back view",
+      "observed_result": "Zoom returned to 1; Forward view enabled; selected event remained DTE failure.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=87"
+      ]
+    },
+    {
+      "id": 88,
+      "action": "Jump to temporal topology",
+      "observed_result": "Temporal-topology section reached with selected DTE failure and absolute-time controls.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=88"
+      ]
+    },
+    {
+      "id": 89,
+      "action": "Activate next_hop relationship for dte-000009",
+      "observed_result": "Outgoing-correlation popup showed exact DTE to IP_ROUTING/blue identity and +600.000 to +600.150 s interval. Slight reported edge overhang had no saved screenshot/material impact and is not counted as a defect.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=89"
+      ]
+    },
+    {
+      "id": 90,
+      "action": "Return to node Overview",
+      "observed_result": "Overview reached; saved state showed latest +720 s moment and no selected event. This record does not assert selection continuity across that move.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=90"
+      ]
+    },
+    {
+      "id": 91,
+      "action": "Search exact event UID node-a/scale-event-01000759",
+      "observed_result": "Settled server-windowed history reported one matching record; search retained focus.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=91",
+        "followups.jsonl:91-search-settled"
+      ]
+    },
+    {
+      "id": 92,
+      "action": "Clear event search",
+      "observed_result": "Settled history restored 1,250,005 matching records; input remained focused.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=92",
+        "followups.jsonl:92-search-cleared-settled"
+      ]
+    },
+    {
+      "id": 93,
+      "action": "Move to event-log controls",
+      "observed_result": "Normalized-events control received focus; search was empty. Exact-row activation was exercised in move 94.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=93"
+      ]
+    },
+    {
+      "id": 94,
+      "action": "Reapply exact UID search and activate matching log row",
+      "observed_result": "Row selected and detail card displayed DTE failure at +600.075 s, modify/failure, no mutation and status unchanged.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=94",
+        "followups.jsonl:94-filter-target-restored"
+      ]
+    },
+    {
+      "id": 95,
+      "action": "Hide selected DTE resource lane",
+      "observed_result": "Lane count dropped from 14 to 13; selected event remained available in inspector/log.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=95"
+      ]
+    },
+    {
+      "id": 96,
+      "action": "Use log Reveal in timeline and wait for settled reveal",
+      "observed_result": "Immediate record still showed 13 lanes; followup restored 14 and focused a visible 10-event cluster in dte-000009 whose interval contains the selected event. Exact event UID remained selected; cluster last UID is not the selected-event identity.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=96",
+        "followups.jsonl:96-reveal-settled",
+        "96-focused-cluster.json",
+        "96-reveal-geometry.json",
+        "96-revealed-lane.png"
+      ]
+    },
+    {
+      "id": 97,
+      "action": "Return to Fabric from node workspace",
+      "observed_result": "Initial capture loaded capabilities; followup restored Fabric and forced-steering controls.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=97",
+        "followups.jsonl:97-fabric-restored"
+      ]
+    },
+    {
+      "id": 98,
+      "action": "Run restored forced-P2 route",
+      "observed_result": "Forward alternative completed with Counterfactual status and expected PE-A to P2 to PE-B path.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=98"
+      ]
+    },
+    {
+      "id": 99,
+      "action": "Reload route workspace",
+      "observed_result": "Initial capture showed reinitialization rather than a completed trace; subsequent move 100 successfully exercised the reloaded page.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=99"
+      ]
+    },
+    {
+      "id": 100,
+      "action": "Choose exact-MTU scenario, trace, and Fit",
+      "observed_result": "Final Forward focused path resolved completely with observed forwarding; Fit button held focus. This intentionally changed the restored forced-steering scenario.",
+      "classification": "no-defect-observed",
+      "evidence": [
+        "moves.jsonl:id=100",
+        "100-final-route.png"
+      ]
+    }
+  ],
+  "supplementary": [
+    {
+      "id": "after-69-pinned-filter-focus",
+      "classification": "new-defect",
+      "action": "Pin10.64.0.0/24, focus Filter nodes, type p, then type1 without refocusing.",
+      "observed_result": "First character p is inserted, then activeElement becomes Close topology details; the next native key leaves filter p. A second pin/filter sequence reproduced the same result. After closing the pin, typing p1 retained input focus and displayed one matching device. Passive graph redraw restores the pin through unconditional close-button focus.",
+      "distinct_from": "RT01 concerns anchor visibility and popup positioning during graph transforms, not search-input focus ownership.",
+      "evidence": [
+        "followups.jsonl:pin-before-filter",
+        "followups.jsonl:pinned-filter-keyboard-first-character",
+        "followups.jsonl:pinned-filter-next-character",
+        "pinned-filter-keyboard-focus.json",
+        "pinned-filter-keyboard-focus.png",
+        "followups.jsonl:focus-repeat-pinned",
+        "followups.jsonl:focus-repeat-query-lost",
+        "pinned-filter-repeat.json",
+        "pinned-filter-repeat.png",
+        "followups.jsonl:focus-no-pin-control",
+        "filter-no-pin-control.png"
+      ],
+      "source_refs": [
+        "frontend/assets/topology.js:10188 node-filter input calls renderMap",
+        "frontend/assets/topology.js:8870 renderMap calls renderLinkStatusMap",
+        "frontend/assets/topology.js:7970 graph redraw captures existing pin",
+        "frontend/assets/topology.js:8116 graph redraw restores pin",
+        "frontend/assets/topology.js:6505 restoration calls showTopologyInspector with pinned=true",
+        "frontend/assets/topology.js:6494 pinned show unconditionally focuses Close"
+      ],
+      "controlled_comparison": "Pinned: query stalls at p, focus Close. Unpinned: p1 remains, one matching device, focus Filter nodes. Two pinned reproductions observed."
+    },
+    {
+      "id": "after-40-route-filter-restoration",
+      "classification": "new-defect",
+      "action": "Reproduce after move 100: apply search packet-mtu, Node PE-A, and destination demo:node-b:packet-mtu-exact; open Management; browser Back; wait for settled Fabric.",
+      "observed_result": "Before navigation one matching route was shown. After Back, search and destination text persisted, Node reset to All nodes, and 693/693 routes appeared including nonmatching rows. Editing only search reduced results to eight while the visible destination still did not apply; editing destination reduced results to one. Reselecting PE-A retained one. This confirms visible text fields were out of sync with filter state.",
+      "evidence": [
+        "moves.jsonl:id=37",
+        "moves.jsonl:id=45",
+        "moves.jsonl:id=50",
+        "followups.jsonl:back-filter-before-navigation",
+        "followups.jsonl:back-filter-return-settled",
+        "followups.jsonl:back-filter-reapply-search-only",
+        "followups.jsonl:back-filter-reapply-destination",
+        "followups.jsonl:back-filter-recovered-all-three",
+        "back-filter-before.png",
+        "back-filter-mismatch.json",
+        "back-filter-mismatch.png",
+        "back-filter-recovered.png"
+      ],
+      "source_refs": [
+        "frontend/assets/topology.js:137 empty routeTableFilters initialization",
+        "frontend/assets/topology.js:9412 routeTableFilterOptions updates selects but does not reconcile text inputs",
+        "frontend/assets/topology.js:9430 routeTableEntryMatchesFilters reads state filters",
+        "frontend/assets/topology.js:9623 renderRouteTables filters the snapshot from state",
+        "frontend/assets/topology.js:10126 input/change handlers are the DOM-to-state bridge",
+        "frontend/assets/topology.js:9788 syncUrl does not persist route-table filters; no pageshow/popstate filter reconciliation found",
+        "frontend/pages/topology.html:538 and :562 search/destination inputs"
+      ],
+      "distinct_from": "MN006 repaired stale trace scenario/direction/context in node return_to links. This is browser history restoring text control values without matching route-table filter state."
+    },
+    {
+      "id": "24-25-unexpected-node-navigation",
+      "classification": "pending/limited",
+      "action": "Pointer-submit invalid/recovered trace controls.",
+      "observed_result": "Unexpected PE-A navigation recorded; keyboard invalid-input retry behaved correctly. No source navigation path from budget validation was found. Tool targeting, popup overlap, and scrolling remain hypotheses.",
+      "evidence": [
+        "followups.jsonl:24-unexpected-navigation",
+        "followups.jsonl:24-invalid-keyboard-submit",
+        "followups.jsonl:25-trace-retry-timeout"
+      ]
+    },
+    {
+      "id": "40-return-loading-cost",
+      "classification": "pending/limited",
+      "action": "Observe process while immediately returning from a still-loading node workspace.",
+      "observed_result": "A64.436-second observation window accumulated54.547 process CPU seconds, with RSS peak3550547968bytes. Window includes earlier asynchronous work and later UI operations; neither CPU attribution nor exact completion time is isolated.",
+      "evidence": [
+        "move40-reconstruction-observation.json"
+      ]
+    }
+  ],
+  "final_control_evidence": [
+    "pan-control-transforms.json",
+    "followups.jsonl:67-keyboard-selection-control",
+    "followups.jsonl:focus-repeat-query-lost",
+    "followups.jsonl:focus-no-pin-control",
+    "followups.jsonl:final-restored-route"
+  ]
+}

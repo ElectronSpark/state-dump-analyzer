@@ -2833,7 +2833,9 @@ provide correlation and hover detail.
 
 These descriptors are presentation sidecars, not forwarding edges. They cannot
 change LPM, candidate selection, path ordering, reachability, or the physical
-L1-L3 principal path. The plug-in decides whether a fact represents a VPN,
+L1-L3 principal path. Path-scoped context and its correlation anchors do not
+declare service membership for the forwarding nodes; membership requires its
+own plug-in evidence. The plug-in decides whether a fact represents a VPN,
 service overlay, label/SID action, VLAN attachment, or another proprietary
 concept. The core validates identity and references, preserves time and
 provenance from the owning forwarding record, and maps the declared style

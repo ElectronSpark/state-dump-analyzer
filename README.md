@@ -261,7 +261,8 @@ rejects that option for `0.0.0.0`, `::`, and every other non-loopback bind.
    time. Use **Zoom range** (or `Z`/`Enter`) to fit that duration without
    changing its endpoints. The timeline toolbar also provides pointer-centered
    zoom, centering, capture fit, previous/next viewport history, and horizontal
-   trackpad or Shift+wheel panning. Right-click
+   trackpad or Ctrl/Shift+wheel panning. Alt+wheel zooms at the pointer;
+   wheel alone scrolls lanes vertically. Right-click
    a lane or event—or open **Actions** for touch and keyboard use—to inspect or
    reveal an item, set either range boundary, select the visible duration, copy
    time coordinates, focus or hide a resource, and clear the current selection.

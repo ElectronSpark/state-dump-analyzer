@@ -86,6 +86,9 @@ validation/load failure, retry, and concurrent close with exact cleanup counts.
 Compare cold and warm behavior, including changed inputs and failed or
 superseded requests. A faster successful call does not establish unchanged
 identity enforcement, archive safety, or browser readiness.
+For source-path reuse, check a fresh resolution pass at the end of each
+attestation, retargeting after source reads, and independent before/after calls;
+count filesystem work without substituting a cached trust decision.
 For disconnects, exercise actual ASGI body/receive messages, mid-scan cancellation,
 independent readers, lease cleanup, cache-build retry and durable-router exclusion.
 Distinguish cancellable core scans from noninterruptible shared runtime loading.
@@ -163,6 +166,9 @@ while an older read is pending. Verify selected presets, focus, popup anchors,
 and dependent guidance after the settled render. Use production-normalized
 source lanes and server-shaped inferred edges in composed regressions; invented
 optional fields can hide an integration mismatch. See the map for these checks.
+In single-node lanes, Ctrl+wheel pans time, Alt+wheel zooms at the pointer,
+and plain wheel scrolls vertically; verify pan/zoom burst handoff and keep
+these mappings separate from graph controls.
 Exercise actual originating handlers when superseding work; manually advancing
 a token cannot prove that slider, selection, or disconnect actions advance it.
 Include a slider key or pointer action that leaves its value unchanged.
@@ -181,7 +187,9 @@ without scrolling; opening the lane picker must leave its controls clickable.
 Move pinned anchors fully outside each scroll boundary and behind sticky controls,
 then click a surrounding control. Compare a partially visible anchor and verify
 that scrolling back does not revive a dismissed card. Include log-row anchors
-and native keyboard activation after scrolling, not just timeline markers.
+and Fabric graph transforms, not just timeline markers. Distinguish passive
+pin restoration from activation: redraw must not steal focus from a field being
+typed into. Verify native keyboard activation after scrolling too.
 Start Enter/Space from timeline targets above and below the viewport, including
 an upward source-marker reveal and horizontal label occlusion. Check the settled
 card; use visible and partially visible pointer targets and virtual-log focus
@@ -197,7 +205,15 @@ the same event and resource across lane, log and review popups; preserve finite
 and explicitly open-ended durations, and label unavailable history as unknown.
 Compare
 exact counts with paged detail, and retained-result labels with the applied
-request after invalid input. Exercise route-row seeds across directions and
+request after invalid input. After actual browser Back, compare restored field
+values with settled rows; consistent reset and retained filtering are both valid.
+For layered graphs, compare SVG and HTML coordinates and marker IDs in the live
+document; correct semantic output does not establish correct visible geometry.
+Cross-check node, edge, label and resolution-step highlights in both directions;
+cross-node evidence ownership must not replace the executing hop's identity.
+Check that path-scoped service context does not visually assert membership for
+transit nodes. Correlation anchors and path endpoints alone are not membership evidence.
+Exercise route-row seeds across directions and
 equivalent endpoint descriptors. Distinguish natural browser timing from
 controlled delayed-response tests and report both evidence levels.
 

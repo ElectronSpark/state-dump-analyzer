@@ -20,8 +20,8 @@ _SERVICE_PRESENTATIONS: dict[str, dict[str, Any]] = {
         "technology": "MPLS L3VPN",
         "label": "{vrf} VPN overlay · {technology}",
         "description": (
-            "Tenant routing and VPN-label context encloses the outer path; "
-            "it is not an additional forwarding hop."
+            "Tenant routing and VPN-label context describes the service carried "
+            "over the outer path. Transit nodes need not participate in the VPN."
         ),
         "fact_fields": {},
         "connectivity_domain_keys": {
@@ -33,8 +33,8 @@ _SERVICE_PRESENTATIONS: dict[str, dict[str, Any]] = {
         "technology": "EVPN service",
         "label": "{vrf} VPN overlay · {technology}",
         "description": (
-            "EVPN control and service context encloses the outer path; "
-            "it is not an additional forwarding hop."
+            "EVPN control and service context describes the service carried "
+            "over the outer path. Transit nodes need not participate in the VPN."
         ),
         "fact_fields": {"evpn": "service_attributes"},
         "connectivity_domain_keys": {
@@ -45,8 +45,8 @@ _SERVICE_PRESENTATIONS: dict[str, dict[str, Any]] = {
         "technology": "EVPN MAC/IP",
         "label": "{vrf} VPN overlay · {technology}",
         "description": (
-            "EVPN Type-2 and Ethernet-segment context encloses the outer "
-            "path; it is not an additional forwarding hop."
+            "EVPN Type-2 and Ethernet-segment context describes the service carried "
+            "over the outer path. Transit nodes need not participate in the VPN."
         ),
         "fact_fields": {"evpn": "service_attributes"},
         "connectivity_domain_keys": {
@@ -57,8 +57,8 @@ _SERVICE_PRESENTATIONS: dict[str, dict[str, Any]] = {
         "technology": "EVPN IP prefix",
         "label": "{vrf} VPN overlay · {technology}",
         "description": (
-            "EVPN Type-5 and IP-prefix context encloses the outer path; "
-            "it is not an additional forwarding hop."
+            "EVPN Type-5 and IP-prefix context describes the service carried "
+            "over the outer path. Transit nodes need not participate in the VPN."
         ),
         "fact_fields": {"evpn": "service_attributes"},
         "connectivity_domain_keys": {

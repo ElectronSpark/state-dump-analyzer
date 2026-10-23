@@ -89,6 +89,48 @@ function wheelBurstHarness() {
   };
 }
 
+test("lane wheel modifiers select horizontal pan, pointer zoom, or native vertical scrolling", () => {
+  for (const [input, expected] of [
+    [{ ctrlKey: true, deltaY: 40 }, { pan: 40 }],
+    [{ ctrlKey: true, deltaY: -3, deltaMode: 1 }, { pan: -48 }],
+    [{ ctrlKey: true, deltaY: 1, deltaMode: 2 }, { pan: 800 }],
+    [{ altKey: true, deltaY: -40 }, { zoom: true, anchorNs: 42n }],
+    [{ altKey: true, ctrlKey: true, deltaY: 40 }, { zoom: true, anchorNs: 42n }],
+    [{ deltaY: 40 }, null],
+    [{ deltaX: 3, deltaY: 40 }, null],
+    [{ deltaX: -40, deltaY: 3 }, { pan: -40 }],
+    [{ shiftKey: true, deltaY: 40 }, { pan: 40 }],
+    [{ ctrlKey: true, deltaY: 0 }, null],
+    [{ ctrlKey: true, deltaY: Infinity }, null],
+  ]) {
+    const actions = [];
+    let prevented = 0;
+    const track = {};
+    const event = { ctrlKey: false, altKey: false, shiftKey: false, metaKey: false,
+      deltaX: 0, deltaY: 0, deltaMode: 0, clientX: 120,
+      target: { closest: () => track }, preventDefault() { prevented++; }, ...input };
+    const wheel = new Function("state", "byId", "WheelEvent", "pointNsFromClientX", "scheduleTimelineZoom", "scheduleTimelinePan",
+      `${functionSource("timelineWheel")} return timelineWheel;`)(
+      {}, () => ({ clientWidth: 800 }), { DOM_DELTA_LINE: 1, DOM_DELTA_PAGE: 2 },
+      (x, element) => { assert.equal(x, 120); assert.equal(element, track); return 42n; },
+      (value, options) => { assert.equal(value, event); actions.push({ zoom: true, ...options }); },
+      (pan) => actions.push({ pan }),
+    );
+    wheel(event);
+    assert.deepEqual(actions, expected ? [expected] : [], JSON.stringify(input));
+    assert.equal(prevented, expected ? 1 : 0, "plain vertical wheel remains a browser scroll");
+  }
+});
+
+test("an active range brush retains ownership against all lane wheel gestures", () => {
+  const wheel = new Function("state", `${functionSource("timelineWheel")} return timelineWheel;`)({ brush: {} });
+  for (const modifiers of [{}, { ctrlKey: true }, { altKey: true }]) {
+    let prevented = false;
+    wheel({ ...modifiers, preventDefault() { prevented = true; } });
+    assert.equal(prevented, true);
+  }
+});
+
 for (const [firstMode, secondMode] of [["pan", "zoom"], ["zoom", "pan"]]) {
   test(`${firstMode} to ${secondMode} handoff retires the old finish timer`, () => {
     const harness = wheelBurstHarness();

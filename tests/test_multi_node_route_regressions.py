@@ -518,6 +518,72 @@ class MultiNodeRouteRegressionTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 422)
 
+    def test_inventory_hop_highlights_keep_execution_and_evidence_identity_separate(
+        self,
+    ) -> None:
+        response = self.client.post(
+            "/v1/topologies/routes/trace",
+            json={
+                "scenario_id": "router-to-router",
+                "source_id": "source:node-a",
+                "destination_id": "destination:node-b",
+                "vrf_id": "blue",
+                "route_family": "vpnv4_unicast",
+                "route_type": "mpls_l3vpn",
+                "direction": "both",
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        traces = response.json()["traces"]
+        self.assertEqual(set(traces), {"forward", "reverse"})
+        for direction, trace in traces.items():
+            with self.subTest(direction=direction):
+                self.assertTrue(trace["paths"])
+                targets = {
+                    target["target_id"]: target
+                    for target in trace["interaction_targets"]
+                }
+                for path in trace["paths"]:
+                    source_node = path["node_sequence"][0]
+                    local_segments = [
+                        segment for segment in path["segments"]
+                        if segment["segment_kind"] == "node_resolution"
+                    ]
+                    self.assertEqual(
+                        [segment["node_id"] for segment in local_segments],
+                        path["node_sequence"],
+                    )
+                    graph_targets = []
+                    for segment in local_segments:
+                        node_id = segment["node_id"]
+                        self.assertEqual(segment["member_id"], f"member:{node_id}")
+                        self.assertEqual(segment["member_ids"], [f"member:{node_id}"])
+                        self.assertEqual(len(segment["highlight_target_ids"]), 1)
+                        target_id = segment["highlight_target_ids"][0]
+                        graph_targets.append(target_id)
+                        self.assertEqual(targets[target_id]["kind"], "topology_node")
+                        self.assertEqual(targets[target_id]["node_id"], node_id)
+                        self.assertEqual(targets[target_id]["member_id"], f"member:{node_id}")
+                        resolution = segment["route_resolution"]
+                        self.assertEqual(resolution["highlight_target_ids"], [target_id])
+                        for part in resolution["parts"]:
+                            self.assertEqual(part["highlight_target_ids"], [target_id])
+                        # Continuations may cite ingress evidence. It must keep
+                        # that ownership instead of redefining the executing hop.
+                        self.assertTrue(segment["resource_refs"])
+                        for reference in segment["resource_refs"]:
+                            self.assertEqual(reference["node_id"], source_node)
+                            self.assertEqual(reference["member_id"], f"member:{source_node}")
+                            self.assertEqual(
+                                reference["local_resource_id"],
+                                f"{source_node}/control-plane/IP_ROUTING/blue",
+                            )
+                        for resource_target_id in segment["interaction_target_ids"]:
+                            resource_target = targets[resource_target_id]
+                            self.assertEqual(resource_target["node_id"], source_node)
+                            self.assertEqual(resource_target["member_id"], f"member:{source_node}")
+                    self.assertEqual(len(set(graph_targets)), len(local_segments))
+
     def test_vrf_scope_is_enforced_on_both_endpoints(self) -> None:
         invalid_requests = [
             {

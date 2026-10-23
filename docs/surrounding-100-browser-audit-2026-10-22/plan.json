@@ -1,0 +1,402 @@
+[
+  {
+    "id": 1,
+    "action": "Jump to Route trace from the retained VPN graph"
+  },
+  {
+    "id": 2,
+    "action": "Choose MTU-drop packet scenario"
+  },
+  {
+    "id": 3,
+    "action": "Request both trace directions"
+  },
+  {
+    "id": 4,
+    "action": "Run MTU-drop trace"
+  },
+  {
+    "id": 5,
+    "action": "Select the terminal packet transition"
+  },
+  {
+    "id": 6,
+    "action": "Select the first packet transition"
+  },
+  {
+    "id": 7,
+    "action": "Switch packet-drop graph to All paths"
+  },
+  {
+    "id": 8,
+    "action": "Inspect Return direction"
+  },
+  {
+    "id": 9,
+    "action": "Restore Forward direction"
+  },
+  {
+    "id": 10,
+    "action": "Restore Focused path view"
+  },
+  {
+    "id": 11,
+    "action": "Choose exact-MTU packet scenario"
+  },
+  {
+    "id": 12,
+    "action": "Run exact-MTU trace"
+  },
+  {
+    "id": 13,
+    "action": "Inspect its delivered packet transition"
+  },
+  {
+    "id": 14,
+    "action": "Expand advanced trace options"
+  },
+  {
+    "id": 15,
+    "action": "Choose forced-steering packet scenario"
+  },
+  {
+    "id": 16,
+    "action": "Select an advertised counterfactual steering rule"
+  },
+  {
+    "id": 17,
+    "action": "Run forced trace"
+  },
+  {
+    "id": 18,
+    "action": "Change to Return only"
+  },
+  {
+    "id": 19,
+    "action": "Run Return-only forced trace"
+  },
+  {
+    "id": 20,
+    "action": "Restore Both directions"
+  },
+  {
+    "id": 21,
+    "action": "Reduce hop budget to one"
+  },
+  {
+    "id": 22,
+    "action": "Run constrained-hop trace"
+  },
+  {
+    "id": 23,
+    "action": "Restore hop budget to 64"
+  },
+  {
+    "id": 24,
+    "action": "Submit invalid recursion limit zero"
+  },
+  {
+    "id": 25,
+    "action": "Restore recursion limit and run successfully"
+  },
+  {
+    "id": 26,
+    "action": "Jump to Route tables and search packet-mtu"
+  },
+  {
+    "id": 27,
+    "action": "Filter route tables to PE-A"
+  },
+  {
+    "id": 28,
+    "action": "Filter routes to default VRF"
+  },
+  {
+    "id": 29,
+    "action": "Filter to IPv4 family"
+  },
+  {
+    "id": 30,
+    "action": "Filter to an available protocol"
+  },
+  {
+    "id": 31,
+    "action": "Expand a route's plug-in details"
+  },
+  {
+    "id": 32,
+    "action": "Collapse those details"
+  },
+  {
+    "id": 33,
+    "action": "Apply a nonexistent destination filter"
+  },
+  {
+    "id": 34,
+    "action": "Clear all route filters"
+  },
+  {
+    "id": 35,
+    "action": "Search forced-steering routes"
+  },
+  {
+    "id": 36,
+    "action": "Use one matching route to seed trace"
+  },
+  {
+    "id": 37,
+    "action": "Run seeded trace and inspect form/result identity"
+  },
+  {
+    "id": 38,
+    "action": "Jump to inter-node Links"
+  },
+  {
+    "id": 39,
+    "action": "Open a link endpoint in its node workspace"
+  },
+  {
+    "id": 40,
+    "action": "Return to fabric with browser Back"
+  },
+  {
+    "id": 41,
+    "action": "Jump to Fabric"
+  },
+  {
+    "id": 42,
+    "action": "Open How to read"
+  },
+  {
+    "id": 43,
+    "action": "Close How to read"
+  },
+  {
+    "id": 44,
+    "action": "Filter devices to P1"
+  },
+  {
+    "id": 45,
+    "action": "Switch attention highlighting"
+  },
+  {
+    "id": 46,
+    "action": "Switch incomplete highlighting"
+  },
+  {
+    "id": 47,
+    "action": "Restore all-device highlighting"
+  },
+  {
+    "id": 48,
+    "action": "Clear device text filter"
+  },
+  {
+    "id": 49,
+    "action": "Collapse device list"
+  },
+  {
+    "id": 50,
+    "action": "Expand device list"
+  },
+  {
+    "id": 51,
+    "action": "Select Underlay plane"
+  },
+  {
+    "id": 52,
+    "action": "Open Elements picker"
+  },
+  {
+    "id": 53,
+    "action": "Enable Subinterfaces"
+  },
+  {
+    "id": 54,
+    "action": "Disable Interfaces"
+  },
+  {
+    "id": 55,
+    "action": "Disable Subnets"
+  },
+  {
+    "id": 56,
+    "action": "Disable External networks"
+  },
+  {
+    "id": 57,
+    "action": "Disable VLANs"
+  },
+  {
+    "id": 58,
+    "action": "Disable LAGs"
+  },
+  {
+    "id": 59,
+    "action": "Disable the last remaining layer and inspect empty presentation"
+  },
+  {
+    "id": 60,
+    "action": "Restore Subnets and Interfaces"
+  },
+  {
+    "id": 61,
+    "action": "Select P1 in topology graph"
+  },
+  {
+    "id": 62,
+    "action": "Set graph zoom to 1:1"
+  },
+  {
+    "id": 63,
+    "action": "Pan graph left repeatedly"
+  },
+  {
+    "id": 64,
+    "action": "Pan graph down repeatedly"
+  },
+  {
+    "id": 65,
+    "action": "Fit graph with keyboard"
+  },
+  {
+    "id": 66,
+    "action": "Switch to VPN plane"
+  },
+  {
+    "id": 67,
+    "action": "Select PE-B graph node"
+  },
+  {
+    "id": 68,
+    "action": "Return to Underlay"
+  },
+  {
+    "id": 69,
+    "action": "Reconstruct at minus360 seconds"
+  },
+  {
+    "id": 70,
+    "action": "Move reconstruction slider to oldest boundary"
+  },
+  {
+    "id": 71,
+    "action": "Move slider to newest boundary"
+  },
+  {
+    "id": 72,
+    "action": "Reconstruct with strict clock policy"
+  },
+  {
+    "id": 73,
+    "action": "Switch to absolute time basis"
+  },
+  {
+    "id": 74,
+    "action": "Submit an invalid absolute timestamp"
+  },
+  {
+    "id": 75,
+    "action": "Submit a valid timestamp"
+  },
+  {
+    "id": 76,
+    "action": "Restore relative watermark zero and best-effort policy"
+  },
+  {
+    "id": 77,
+    "action": "Remove PE-B from selected members"
+  },
+  {
+    "id": 78,
+    "action": "Inspect route behavior with PE-B excluded"
+  },
+  {
+    "id": 79,
+    "action": "Restore PE-B and reconstruct"
+  },
+  {
+    "id": 80,
+    "action": "Open PE-A node workspace"
+  },
+  {
+    "id": 81,
+    "action": "Open resource lane picker"
+  },
+  {
+    "id": 82,
+    "action": "Filter lanes for DTE000009"
+  },
+  {
+    "id": 83,
+    "action": "Enable matching resource lane"
+  },
+  {
+    "id": 84,
+    "action": "Jump to its known failure event"
+  },
+  {
+    "id": 85,
+    "action": "Inspect selected event in an adjacent component"
+  },
+  {
+    "id": 86,
+    "action": "Zoom the event timeline"
+  },
+  {
+    "id": 87,
+    "action": "Use timeline Back"
+  },
+  {
+    "id": 88,
+    "action": "Jump to node topology at selected cursor"
+  },
+  {
+    "id": 89,
+    "action": "Inspect a resource relationship"
+  },
+  {
+    "id": 90,
+    "action": "Return to node overview"
+  },
+  {
+    "id": 91,
+    "action": "Search for the selected event identity"
+  },
+  {
+    "id": 92,
+    "action": "Clear event search"
+  },
+  {
+    "id": 93,
+    "action": "Jump to event log"
+  },
+  {
+    "id": 94,
+    "action": "Activate a log-row detail card"
+  },
+  {
+    "id": 95,
+    "action": "Hide selected resource lane"
+  },
+  {
+    "id": 96,
+    "action": "Jump to selected event again"
+  },
+  {
+    "id": 97,
+    "action": "Return to fabric"
+  },
+  {
+    "id": 98,
+    "action": "Run the restored route"
+  },
+  {
+    "id": 99,
+    "action": "Reload the route workspace"
+  },
+  {
+    "id": 100,
+    "action": "Run and fit a final successful route"
+  }
+]

@@ -1,0 +1,135 @@
+{
+  "pid": 29420,
+  "sampler_stopped": true,
+  "demo_server_left_running": true,
+  "observed_start_utc": "2026-10-22T23:56:05.4349362Z",
+  "observed_end_utc": "2026-10-23T00:21:42.3735159Z",
+  "samples": 1515,
+  "duration_seconds": 1536.938579,
+  "total_process_cpu_seconds": 323.8125,
+  "peak_single_core_cpu_percent": 112.15674382460666,
+  "rss_start_bytes": 3087810560,
+  "rss_end_bytes": 3066355712,
+  "rss_min_bytes": 2027470848,
+  "rss_peak_bytes": 3550547968,
+  "private_start_bytes": 3079819264,
+  "private_end_bytes": 3062378496,
+  "private_peak_bytes": 3585327104,
+  "planned_move_count": 100,
+  "aligned_move_count": 99,
+  "planned_100_moves_window": {
+    "started": "2026-10-22T23:56:50.647Z",
+    "finished": "2026-10-23T00:16:36.095Z",
+    "ui_span_seconds": 1185.448,
+    "inner_process_cpu_seconds": 298.625,
+    "outer_process_cpu_seconds": 298.703125
+  },
+  "move40_observation": {
+    "move_id": 40,
+    "move_started": "2026-10-23T00:03:47.584Z",
+    "observation_end": "2026-10-23T00:04:52.0201588Z",
+    "elapsed_from_move40_seconds": 64.436158,
+    "sampled_cpu_since_first_after_move40_seconds": 54.546875,
+    "first_sample": {
+      "utc": "2026-10-23T00:03:47.7971070Z",
+      "pid": 29420,
+      "cpu_seconds": 782.3125,
+      "interval_seconds": 1.0102165,
+      "interval_cpu_seconds": 1.0,
+      "single_core_cpu_percent": 98.98868212902877,
+      "rss_bytes": 3396804608,
+      "private_bytes": 3431231488,
+      "threads": 9,
+      "handles": 397
+    },
+    "last_sample": {
+      "utc": "2026-10-23T00:04:52.0201588Z",
+      "pid": 29420,
+      "cpu_seconds": 836.859375,
+      "interval_seconds": 1.0255813,
+      "interval_cpu_seconds": 0.0,
+      "single_core_cpu_percent": 0.0,
+      "rss_bytes": 2397425664,
+      "private_bytes": 2395672576,
+      "threads": 6,
+      "handles": 376
+    },
+    "rss_min_bytes": 2295296000,
+    "rss_peak_bytes": 3550547968,
+    "limitations": [
+      "Process-wide CPU includes any earlier asynchronous operation still running; this does not isolate reconstruction CPU.",
+      "UI move39 opened a link endpoint; move40 immediately returned to fabric.",
+      "No HTTP requests or browser interactions were made by observer."
+    ],
+    "latest_log_evidence": [
+      "POST /v1/topologies/reconstruct HTTP/1.1 200 OK",
+      "POST /v1/topology-assemblies/router-state-lab-generated-demo-v1/routes/tables/query HTTP/1.1 200 OK",
+      "No new stderr content; CPU near idle at observation end."
+    ]
+  },
+  "move80_observation": {
+    "move_id": 80,
+    "move_started": "2026-10-23T00:09:12.217Z",
+    "last_recorded_loading": "2026-10-23T00:09:39.858Z",
+    "first_recorded_ready": "2026-10-23T00:10:24.828Z",
+    "loading_still_observed_after_seconds": 27.641,
+    "first_recorded_ready_upper_bound_seconds": 72.611,
+    "inner_sample_first": "2026-10-23T00:09:12.7349667Z",
+    "inner_sample_last": "2026-10-23T00:10:23.8534253Z",
+    "inner_process_cpu_seconds": 59.328125,
+    "outer_sample_before": "2026-10-23T00:09:11.7192360Z",
+    "outer_sample_after": "2026-10-23T00:10:24.8672510Z",
+    "outer_process_cpu_seconds": 59.8125,
+    "rss_min_bytes": 2027470848,
+    "rss_peak_bytes": 3043745792,
+    "rss_ready_sample_bytes": 3043745792,
+    "max_single_core_cpu_percent": 107.6838149183262,
+    "io_observation_start": "2026-10-23T00:10:19.5137925Z",
+    "io_observation_end": "2026-10-23T00:10:26.1801560Z",
+    "io_read_bytes_delta": 2365696,
+    "io_write_bytes_delta": 0,
+    "limitations": [
+      "The ready timestamp is a UI observation upper bound and includes bounded waits and read/tool latency; actual completion happened earlier.",
+      "CPU is process-wide and includes any earlier asynchronous work and polling.",
+      "I/O counters were sampled late in the phase, not during its sustained CPU section.",
+      "No browser/HTTP calls were made by observer."
+    ]
+  },
+  "logs": [
+    {
+      "source_path": "C:\\Users\\82046\\OneDrive\\\u6587\u6863\\state dump analyzer\\.runtime\\root-cause-repairs-2026-10-22\\demo.stdout.log",
+      "baseline_bytes": 90739,
+      "observed_end_bytes": 173076,
+      "delta_bytes": 82337,
+      "delta_file": "C:\\Users\\82046\\OneDrive\\\u6587\u6863\\state dump analyzer\\.runtime\\surrounding-100-audit-2026-10-22\\demo.stdout.log.audit-delta",
+      "line_count": 911,
+      "error_line_count": 0,
+      "error_lines": [],
+      "http_status_counts": {
+        "200": 911
+      }
+    },
+    {
+      "source_path": "C:\\Users\\82046\\OneDrive\\\u6587\u6863\\state dump analyzer\\.runtime\\root-cause-repairs-2026-10-22\\demo.stderr.log",
+      "baseline_bytes": 117,
+      "observed_end_bytes": 117,
+      "delta_bytes": 0,
+      "delta_file": "C:\\Users\\82046\\OneDrive\\\u6587\u6863\\state dump analyzer\\.runtime\\surrounding-100-audit-2026-10-22\\demo.stderr.log.audit-delta",
+      "line_count": 0,
+      "error_line_count": 0,
+      "error_lines": [],
+      "http_status_counts": {}
+    }
+  ],
+  "limitations": [
+    "Only confirmed demo PID29420 was sampled; browser CPU and memory were not measured.",
+    "One-second sampling can miss shorter memory or CPU peaks.",
+    "Total CPU covers the whole observation window, including post100 followup checks and periodic analysis-load polling.",
+    "Per-move alignment is temporal, not causal attribution: asynchronous work may continue into later moves. Outer brackets overlap and must not be summed.",
+    "Move12 lacks a start timestamp after the documented timeout/reconnect, so its individual time/CPU alignment is unavailable.",
+    "Move80 first-ready72.611s is an observed upper bound containing bounded waits/read/tool latency, not an exact backend duration.",
+    "Move40 observation shows CPU activity and completed reconstruction in buffered logs; it does not establish an exact UI-readiness timestamp.",
+    "Access logs are buffered and do not include request elapsed timestamps. Reported status/error counts cover newly flushed log bytes.",
+    "No HTTP calls, browser interactions, process restart, product edits, or tests were performed by this observer."
+  ]
+}

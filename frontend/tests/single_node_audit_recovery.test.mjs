@@ -693,7 +693,7 @@ for(const declared of [false,true]) test(`visible incident buttons retain select
   api.renderIncidentSummary();assert.deepEqual(buttons.map(b=>b.dataset.eventUid),visible.map(b=>b.dataset.eventUid));
 });
 
-for(const mode of ['ctrl','meta','pan']) for(const continued of [false,true]) {
+for(const mode of ['ctrl','alt','pan']) for(const continued of [false,true]) {
   test(`pending Reveal yields before a queued ${mode} wheel frame; continued burst=${continued}`,async()=>{
     const response=deferred();const frames=new Map();const timers=new Map();const history=[];const applied=[];const jumps=[];
     let nextId=0,refreshes=0;
@@ -713,7 +713,7 @@ for(const mode of ['ctrl','meta','pan']) for(const continued of [false,true]) {
       applyTimelineZoom:(zoom,options)=>{applied.push({zoom,options});state.zoom=zoom;},
       panTimelineViewportByPixels:(delta,options)=>applied.push({delta,options}),
     });
-    const wheel=()=>api.timelineWheel({ctrlKey:mode==='ctrl',metaKey:mode==='meta',shiftKey:false,
+    const wheel=()=>api.timelineWheel({ctrlKey:mode==='ctrl',altKey:mode==='alt',metaKey:false,shiftKey:false,
       deltaMode:0,deltaX:mode==='pan'?10:0,deltaY:mode==='pan'?0:-10,clientX:100,
       target:{closest:()=>({})},preventDefault:noop});
     if(continued)wheel();
@@ -723,6 +723,7 @@ for(const mode of ['ctrl','meta','pan']) for(const continued of [false,true]) {
     assert.deepEqual(jumps,[]);
     api.finishTimelineWheelBurst();
     assert.equal(applied.length,1);assert.equal(applied[0].options.recordHistory,false);assert.equal(applied[0].options.fromWheel,true);
+    assert.equal('zoom' in applied[0],mode==='alt');assert.equal('delta' in applied[0],mode!=='alt');
     assert.equal(history.length,2);assert.equal(refreshes,1);assert.equal(frames.size,0);assert.equal(timers.size,0);
     assert.equal(state.timelineWheelBurstActive,false);
   });
