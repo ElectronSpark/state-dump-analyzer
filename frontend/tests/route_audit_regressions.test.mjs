@@ -176,6 +176,55 @@ test("LV01: service popup rejects disconnected and fully off-screen anchors, whi
   assert.ok(parseFloat(h.card.style.top) >= 88, "service details do not cover the sticky header");
 });
 
+test("H5-03: native focus reveal finishes before service clipping, including sticky-header occlusion", () => {
+  for (const top of [837, -120, 20]) {
+    for (const key of ["Enter", " "]) {
+      const h = servicePopupHarness();
+      const trigger = h.container.querySelector();
+      h.move(h.rect(300, top, 210, 40));
+      const reveals = [];
+      trigger.scrollIntoView = (options) => {
+        reveals.push(options);
+        // Native nearest reveal can still place an upward target under the header.
+        h.move(h.rect(300, top >= 720 ? 680 : 0, 210, 40));
+      };
+      h.deps.window.scrollBy = ({ top: dy, behavior }) => {
+        assert.equal(behavior, "instant");
+        h.move(h.rect(300, trigger.getBoundingClientRect().top - dy, 210, 40));
+      };
+      trigger.focus();
+      assert.equal(h.card.hidden, false, "focus preview survives before the activation key");
+      assert.equal(h.document.activeElement, trigger, "preview does not steal keyboard focus");
+      trigger.fire("keydown", { key, preventDefault() {} });
+      assert.equal(h.card.hidden, false);
+      assert.equal(h.state.routePresentationPinned, true);
+      assert.equal(h.state.routePresentationTrigger, trigger);
+      assert.equal(h.document.activeElement, h.card.querySelector());
+      assert.deepEqual(reveals, [{ behavior: "instant", block: "nearest", inline: "nearest" }]);
+      h.api.positionRoutePathPreview(trigger);
+      assert.equal(h.card.hidden, false, "settled scroll positioning keeps the same live pin");
+    }
+  }
+});
+
+test("H5-03: visible pointer/focus targets and passive focus restoration never force a reveal", () => {
+  for (const top of [65, 200, 710]) {
+    const h = servicePopupHarness();
+    const trigger = h.container.querySelector();
+    h.move(h.rect(300, top, 210, 40));
+    trigger.scrollIntoView = () => assert.fail("visible or partially visible triggers stay stationary");
+    trigger.fire("pointerenter", { clientX: 320, clientY: top + 20 });
+    trigger.focus();
+    assert.equal(h.card.hidden, false);
+    h.move(h.rect(300, 837, 210, 40));
+    h.state.routePresentationSuppressFocusPreview = true;
+    trigger.focus();
+    assert.equal(h.state.routePresentationTrigger, trigger);
+    h.api.positionRoutePathPreview(trigger);
+    assert.equal(h.card.hidden, true, "passive restoration does not override clipping dismissal");
+  }
+});
+
 test("LV01: short viewports bound service details below the header and shared path previews reclaim available height", () => {
   const h = servicePopupHarness();
   h.deps.window.innerHeight = 300;

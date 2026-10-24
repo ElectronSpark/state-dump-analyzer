@@ -1187,6 +1187,34 @@ class MultiNodeTopologyService:
             },
         }
 
+    def resolve_node_navigation_time(
+        self, node_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Resolve a workspace cursor without running topology projections."""
+
+        node = self._node(node_id)
+        if body.get("revision_id") is not None and body["revision_id"] != node["revision_id"]:
+            raise MultiNodeTopologyRequestError("node workspace revision has changed")
+        policy = str(body.get("clock_policy", "best_effort"))
+        if policy not in {"strict", "best_effort"}:
+            raise MultiNodeTopologyRequestError(
+                "clock_policy must be strict or best_effort"
+            )
+        basis = self.normalize_basis(body["basis"])
+        plugin_set_id, selections = self._select_node_projections(node, body)
+        if not selections:
+            raise MultiNodeTopologyRequestError("node workspace has no selected projection")
+        # The individual-node link uses the first selected projection, just as
+        # _query_one_node does. Its watermark, not the dump capture, owns relative time.
+        selection = selections[0]
+        plugin = selection["plugin"]
+        if not node.get("available", True) or not plugin.get("available", True):
+            raise MultiNodeTopologyRequestError("node workspace projection is unavailable")
+        return self._resolve_time(
+            node, plugin_set_id, plugin, selection["projection"],
+            selection["status_perspective_id"], basis, policy,
+        )
+
     @_analysis_load_stage(AnalysisLoadStage.RECONSTRUCTING_TOPOLOGY)
     def query(self, body: dict[str, Any]) -> dict[str, Any]:
         query_cancellation_checkpoint()
@@ -4707,10 +4735,9 @@ class MultiNodeTopologyService:
         kind = str(requested_basis.get("kind", "relative_to_watermark"))
         if kind == "absolute_time":
             params["basis_kind"] = "absolute_time"
+            params["clock_domain"] = str(requested_basis.get("clock_domain", "utc"))
             params["time_ns"] = str(
-                requested_basis.get("time_ns")
-                or (resolved_time or {}).get("query_time_ns")
-                or ""
+                requested_basis.get("time_ns", (resolved_time or {}).get("query_time_ns", ""))
             )
         else:
             params["basis_kind"] = "relative_to_watermark"

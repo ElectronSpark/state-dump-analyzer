@@ -12,14 +12,15 @@ function extract(name) {
 }
 function deferred() { let resolve; let reject; const promise = new Promise((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; }
 const settle = () => new Promise((resolve) => setImmediate(resolve));
-function harness({ resource = false, scale = false, incident = false, navigation = false, pendingBootstrap = false } = {}) {
+function harness({ resource = false, scale = false, incident = false, navigation = false, resolvedTime = null, pendingBootstrap = false } = {}) {
   const bootstrap = deferred(); const timeline = deferred(); const preview = deferred(); const topology = deferred();
   const dataset = { resources: resource ? [{ resource_id: 'r1', kind: 'port' }] : [], events: incident ? [{ event_uid: 'e1', resource_id: 'r1' }] : [] };
+  if (typeof navigation === 'object') dataset.node_snapshot = { resolved_time: { local_time_ns: resolvedTime } };
   const state = { resourceById: new Map(), eventByUid: new Map(), layerMeta: new Map(), lanes: [], durableReview: {}, failureIncidentPreview: [], selectedResourceKind: 'old', correlatedResourceIds: new Set(), laneByResource: new Map(), explicitLaneIds: new Set() };
   const effects = { calls: [], renders: 0, selections: [] };
   const main = { inert: true, busy: true, innerHTML: '', removeAttribute(name) { if (name === 'aria-busy') this.busy = false; } };
   const deps = {
-    state, navigationContext: navigation ? { timeNs: '5' } : {},
+    state, navigationContext: typeof navigation === 'object' ? navigation : navigation ? { timeNs: '5' } : {},
     analysisRuntimeApi: async () => pendingBootstrap ? bootstrap.promise : dataset, bootstrapDatasetPath: () => '/v1/revisions/rev1/analysis',
     workspaceMetadata: () => ({ timeline_start_ns: '0', timeline_end_ns: '10', capture_ns: '10', initial_focus_resource_id: resource ? 'r1' : '' }),
     registerResource: (item) => state.resourceById.set(item.resource_id, item),
@@ -88,6 +89,24 @@ test('late incident preview may focus an empty startup but cannot override user 
     h.state.failureIncidentPreview = [{ event_uid: 'late' }]; h.preview.resolve(); await settle();
     assert.equal(h.effects.selections.length, protectedSelection ? 0 : 1);
   }
+});
+
+test('member startup uses resolved native time for both UTC and relative selectors, including zero', async () => {
+  for (const selector of [{ basisKind: 'absolute_time', timeNs: '5' }, { basisKind: 'relative_to_watermark', basisOffsetNs: '-7' }]) {
+    for (const resolvedTime of ['0', '3']) {
+      const h = harness({ navigation: { nodeId: 'member-a', ...selector }, resolvedTime });
+      const pending = h.initialize(); await settle(); h.timeline.resolve(); await pending;
+      assert.equal(h.state.cursorNs, BigInt(resolvedTime));
+      assert.equal(h.state.cursorSelected, true);
+    }
+  }
+});
+
+test('unresolved member time cannot fall back to raw UTC as native time', async () => {
+  const h = harness({ navigation: { nodeId: 'member-a', basisKind: 'absolute_time', timeNs: '5' } });
+  const pending = h.initialize(); await settle(); h.timeline.resolve(); await pending;
+  assert.equal(h.state.cursorNs, 10n);
+  assert.equal(h.state.cursorSelected, false);
 });
 test('deferred initial event selection refreshes scale timeline once using final cursor and focus', async () => {
   for (const loaded of [false, true]) {

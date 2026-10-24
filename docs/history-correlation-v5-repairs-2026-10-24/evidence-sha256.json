@@ -1,0 +1,663 @@
+{
+  "archive": "evidence.zip",
+  "bytes": 991131,
+  "sha256": "60c9fca965a75deb8891f6ace8bf2b334a8c182afd3851d9c5beebe8a68b61b3",
+  "file_count": 131,
+  "files": [
+    {
+      "path": ".runtime/history-correlation-repairs-v2-2026-10-23/compare_results.py",
+      "bytes": 4334,
+      "sha256": "b759abb3a1a84a094c920ea9043bb32b7eb65fc32cac2aff387be954dd5f6aa7"
+    },
+    {
+      "path": ".runtime/history-correlation-repairs-v2-2026-10-23/measure.py",
+      "bytes": 18298,
+      "sha256": "05a586a092289fe65a10462bba61e79f988bc8588d121bad727df1eed752a92a"
+    },
+    {
+      "path": ".runtime/history-correlation-repairs-v2-2026-10-23/profile_cursor_components.py",
+      "bytes": 12358,
+      "sha256": "4e6a056596fca77c8a63bed1438cafe8d290bedd0cdc44dc5349f1c099a32d39"
+    },
+    {
+      "path": ".runtime/history-correlation-repairs-v4-2026-10-23/after-1m-quiet/result.json",
+      "bytes": 71072,
+      "sha256": "25e42422951db465cb961f8a377d3ddec60c62ba215d2c097ae4a5889c85e61b"
+    },
+    {
+      "path": ".runtime/history-correlation-repairs-v4-2026-10-23/cursor-components/all-results.json",
+      "bytes": 139537,
+      "sha256": "0b444a35af467e2df018276fa15aa42072268d5075321034583976662619a164"
+    },
+    {
+      "path": ".runtime/history-correlation-repairs-v4-2026-10-23/cursor-components/dashboards-profile.txt",
+      "bytes": 10539,
+      "sha256": "451ae3b98ed1dabb51eade382f44f40de79dbe20c9aac0b7fe89cd54f28801ce"
+    },
+    {
+      "path": ".runtime/history-correlation-repairs-v4-2026-10-23/cursor-components/focused_graph-profile.txt",
+      "bytes": 10472,
+      "sha256": "951cda44c1c5643dc8037f1f047fb799861cfdfa44aebb6ff5bed7248e5ddc29"
+    },
+    {
+      "path": ".runtime/history-correlation-repairs-v4-2026-10-23/cursor-components/resources_active-profile.txt",
+      "bytes": 10191,
+      "sha256": "7a1e2b993fd4e30bb72d3f53443b7435bebe8a2df0bac9e1b44a153c7b8b4b8f"
+    },
+    {
+      "path": ".runtime/history-correlation-repairs-v4-2026-10-23/cursor-components/summary.json",
+      "bytes": 4938,
+      "sha256": "d572a16af503a8991beead825bc248574228fd7f97aa0c7aa040e103ae02a98d"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/absolute-fabric-before.json",
+      "bytes": 12046,
+      "sha256": "d99d79cd3cef640ef0859cd0edd22e00a7ed2e0d7ac2235b3ca08784f52e871c"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/absolute-node-before.json",
+      "bytes": 15582,
+      "sha256": "f23536529bea9e65dcedcf41c168f48566ae059ee7ad45c586c36a9deca07135"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/absolute-node-before.png",
+      "bytes": 62025,
+      "sha256": "c151e05a07954933d0f085af2dc29f83696b355934f5e0858af05ce459dd2896"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/browser/popup-clipped-control.json",
+      "bytes": 60,
+      "sha256": "8d4aae9c2893dad423f575b9244a558bb8cd2403bade8d0bf8151bd565a71dec"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/browser/popup-first-enter.png",
+      "bytes": 94347,
+      "sha256": "56bc7222e637d091a699ed73f9e6a47f7090edf4512bebbd0fa185741ec8828b"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/browser/popup-native-first-enter.json",
+      "bytes": 838,
+      "sha256": "75f0770d216b22d84a4fc43bb725da8778d502d9c1ecc13cb9f012feba2f3bc0"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/browser/popup-native-first-space.json",
+      "bytes": 574,
+      "sha256": "2692361de252155da35c679972fc67a6b9502ef9cd8615d109111be7c513f351"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/browser-console.json",
+      "bytes": 2,
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/changes.patch",
+      "bytes": 37074,
+      "sha256": "1b1e6ac5eb919b2ceed9beb2c864ea66144f1970591fafbaf749fa528262fd2b"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/demo-final.stderr.log",
+      "bytes": 117,
+      "sha256": "1eed1d60bd0e79398270c18ef12b75d482a9166fc54342f0e24c03fa4b94100a"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/demo-final.stdout.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/demo-stopped-identity.json",
+      "bytes": 615,
+      "sha256": "425d65fedc49cecbc0c5fcbcdd365d2fdcbe821299e481c9965f8cb70c96b2e0"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/demo.stderr.log",
+      "bytes": 117,
+      "sha256": "3618eb96330b362d42e327ec53310f26ff57e0d6b3298125543dee8fa6ec7b4c"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/demo.stdout.log",
+      "bytes": 39668,
+      "sha256": "2456b50791bd75ce3bbdfd2d4a2a5f7253948a54f5c6e38e2b5b0fa4173ebc2f"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/final-skill-hashes.json",
+      "bytes": 626,
+      "sha256": "10e06c5dbf089acc4653f72e97207c0fbda3c3266bdc0de9bebe4176d0eafb4c"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/frontend-check-loopback.txt",
+      "bytes": 136706,
+      "sha256": "5ef269f39a3ccfae5f4221c093798e442ceb0ac5a26e5826b7fa40efe523db9c"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/frontend-check.txt",
+      "bytes": 140121,
+      "sha256": "0391e436c1a3b56dbc6b2a3962b8a8d8cc212c3c89cddfe71ce21b3e1b361943"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/navigation-tests.md",
+      "bytes": 6020,
+      "sha256": "8a0ca1e5d4d604a8980e46f138f6919fc4cb43f6ea0efce413546e810ce7718c"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/package_evidence.py",
+      "bytes": 2053,
+      "sha256": "0e0e8f8775b63c15e7a1ceb50e3dfa4c9f49588188e214a806fe1e4274e547ab"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/1m-review.json",
+      "bytes": 8336,
+      "sha256": "6d6e5949243f13948a0e027d6a6c21b94d8226e52ef4a08d79a2ff08fc424afc"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/1m-run.log",
+      "bytes": 45736,
+      "sha256": "cea037eb876659206fd79aaf24d405427d04730b2845adcaa4a401e74a7ea5cd"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/1m-sqlite-run.log",
+      "bytes": 45940,
+      "sha256": "0d8cd0f89951c048c748318cdfba1abf04f74e162ddd08ee1619dd30284aa978"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/after-1m-quiet/child.jsonl",
+      "bytes": 45895,
+      "sha256": "4b16214d245c3d1e00a30de7ca96bc7452b19b8399759e0e863c8525779c6b9b"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/after-1m-quiet/memory.jsonl",
+      "bytes": 500420,
+      "sha256": "bbf957fae47fb13f4c8383b48cb55b9fbffdba829e6b8c56dd4d3350023578d3"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/after-1m-quiet/result.json",
+      "bytes": 70839,
+      "sha256": "ae401d425eb412192dc0f5cbcfba1a663f7a62066225957e7c9d504155c4ffb0"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/after-1m-quiet/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/after-1m-sqlite-quiet/child.jsonl",
+      "bytes": 46206,
+      "sha256": "88c8817f200270ba26ebdb1b7cdeaf2f25e8af656925912f0877ff17531a05b3"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/after-1m-sqlite-quiet/memory.jsonl",
+      "bytes": 441928,
+      "sha256": "f5bcfa744416fbc606bf244ecb8f69c094e3b5460963574755836043102a8f05"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/after-1m-sqlite-quiet/result.json",
+      "bytes": 71093,
+      "sha256": "fd81bb8cfff6da585df134232cb5619f6b762b91c75ec9893f858ff604595c22"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/after-1m-sqlite-quiet/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/analysis.md",
+      "bytes": 9425,
+      "sha256": "ad677d5bb51fe7b2658798b2d6e482ecf82e7e7b0891ab9683d1e9b9be91c601"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/build_evidence_manifest.py",
+      "bytes": 2501,
+      "sha256": "eb83c14dda2aa77521b09e2792bf18ffe507a622568689a959e4f0187576ca78"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/compare_cursor.py",
+      "bytes": 2943,
+      "sha256": "3df1121a12db20c6ee558bc7851c4c2c6a4487c49d1471cff07a198504b86668"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/comparison-sqlite.json",
+      "bytes": 14844,
+      "sha256": "89f2a9595f5c4d1626afa265b9c7ef6978fb29d74343add652f020b86a88379f"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/comparison.json",
+      "bytes": 15657,
+      "sha256": "b3a552e7cdbb0250e6b685afb9464d2cd81df1f63fae49fd13ab73e67e4aafe3"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-comparison.json",
+      "bytes": 5960,
+      "sha256": "2a3420fe2eb0813cf01c254ab114042829e76ad1614ebc510be37eafce0f25a6"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/all-results.json",
+      "bytes": 139489,
+      "sha256": "1b9599c1e893f504934cb48ba8745bc546e63a5787b4b642e7a0f5f2fb6cdbd4"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/dashboards-profile.txt",
+      "bytes": 10514,
+      "sha256": "39b807c1562bdb4426f730e72c1a6116e2480254e3b378ce6148ecb4ee161013"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/dashboards.pstats",
+      "bytes": 20021,
+      "sha256": "ede0d30f6394e7c0695dc097f9118c2d98759901ef2ab9db9e942e90086c67b8"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/focused_graph-profile.txt",
+      "bytes": 10384,
+      "sha256": "17eafaf6747c8c06c3bfb3c9d23e5d01a9e28309da258d9c67203c9ce8c91c17"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/focused_graph.pstats",
+      "bytes": 15562,
+      "sha256": "6710498947d53a4c478f16a65e4e51d46f6aefcc4cf3f65e1542c1776ee194bb"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/resources_active-profile.txt",
+      "bytes": 10191,
+      "sha256": "91bd9c923a63c229aa75e8569af41a97b9a1eeded924276e87ab544ff2a31741"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/resources_active.pstats",
+      "bytes": 17306,
+      "sha256": "0bed9e5868f717cd4e0051179162582a38d8d4cdd72c8d1858681ebefff936be"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/resources_empty-profile.txt",
+      "bytes": 10297,
+      "sha256": "d7bcc87c73341e21d189f0cc8c0a7ee02b838dc289d4e948e03056f9bf0c33a2"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/resources_empty.pstats",
+      "bytes": 15118,
+      "sha256": "f14099f1afaab17674adbcb6765af93bda247d3c0c261b997d5e9aa98668c9cb"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/response-verification.json",
+      "bytes": 14010,
+      "sha256": "6b644e37f052eaf949cde2476aaf597913b0b59da921c05cf9e852185c67312c"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/0138c349a78a90e00f7543a1a37f1f4b75cc8beb2dec40331bfa1562e2ab15cc.json.gz",
+      "bytes": 2449,
+      "sha256": "5b3ebb04a6335e912aa2fffae21799148fc9a1085a83f2f04e41d621aaedd46f"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/0a82e16778fef415a7121368650af31247c39a12d299a5b01fa1b8f8e23ec614.json.gz",
+      "bytes": 51679,
+      "sha256": "3b2c6944941281307229323f32a4435ebf31f54191aa3e1852319689f2d261b0"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/1460afa0206722b48e0cda4dd8dea69c94a6dad7b0caee17b39ff75dff2b78f9.json.gz",
+      "bytes": 51629,
+      "sha256": "5e3a5588898ea968a1565e81fbd2a13607d531dfb598d825cac684c36afec817"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/15886cf71ec5e1b0dfc856a4482eff70bd50edb73f88624596a277b121b2610c.json.gz",
+      "bytes": 923,
+      "sha256": "b96c0bdbfc248f40f5188b0087ef4b8ed1ccb5caca5da3e32f42805ee8d1d7c0"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/219bc36c5ce1db9fbe0e5e10193978332a5c7b597a99cddf196d4a9394d05a56.json.gz",
+      "bytes": 51661,
+      "sha256": "888bd1f3608c929b14fe7da7b0c3c89d72e13a1b59f3ab6be2d2ee718c01f3c1"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/23b93121eda73645a776c42415209cdcd2a4f404f0a9d8a80e328a509bd476c0.json.gz",
+      "bytes": 1703,
+      "sha256": "d3a40d82975314dff1555fa0281750318e291e97cf4c5048ee83193197925478"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/3bc00fb0ecb7c9537669114ee8842d0db4df5e87e1f7801c6ebe2565fb9b715f.json.gz",
+      "bytes": 2270,
+      "sha256": "63c26896e04d22e8b2a1c4a6a0fc1aeb13e3fc4ebe7750fe054580fcc7232825"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/3c4c37c8d05feaa8e00b255b206798edbedde2fa5c75ee3671eda78f61303c5e.json.gz",
+      "bytes": 2278,
+      "sha256": "0a00b914a5a2dccce1fefaf6797b863302fb739bdbdb39c25df1a008fa1642b9"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/3dcb0f2c4c655fe3b72dba90f58761e8ea4d283916118dd5ac891ec662526f81.json.gz",
+      "bytes": 919,
+      "sha256": "641e54eb8606f5df735c8c63a4643926d64d4318d83d09b26ef957289f4fe27c"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/4b02977058febd700ae4b466acabfe36f6cb7563b7cc590cc28d7c6ecce99c05.json.gz",
+      "bytes": 2280,
+      "sha256": "61dfab5189e3c3a0a1455f1aadb698ccf6441292fcef830f9d39ece0f1347893"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/4b13697ba4b378420abdccde19b00c7a0768aa4b790ff744e1387e4d8d59637a.json.gz",
+      "bytes": 12600,
+      "sha256": "93e5fa204371a5e7a8a08ecfea9caf70979a17eb1127ecb0aa5630ac5ba10788"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/530b6d656777371ee38d1241a5e01211d41201488453c0b208e73e9fd3de0257.json.gz",
+      "bytes": 51739,
+      "sha256": "490bad5175338ea22983c5c84c7553db9fa9617686507bb31c7ebe671e86f84f"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/5d27a3a3fe2260aca63be37be356295e00d8b27c8f32072ff12ee371392ee18f.json.gz",
+      "bytes": 921,
+      "sha256": "ce2522f4bdb699adddf2f69298d4b9a4e0764e000bb91eaabc785d66ef3341a0"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/5dc1789b4b38ea11eade20b8340b6fa377e82eb243c93b4cd997fb0e49012741.json.gz",
+      "bytes": 12301,
+      "sha256": "736992c99d8339004f53bb61898f65075140da24b976abf10c601199844ed0e2"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/6c3dbd19b0939f5b4cd71adde2832fb7b4d095840b08cbbce049c48ec0961b89.json.gz",
+      "bytes": 51377,
+      "sha256": "fccebb48083ace920f8b34783d8e60ae0e10ace1d19ee32256189a0a7cc6c3bb"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/72f067a3d1286fb6cac60bf7cd4d886eba3b7ea6efab6afde4fb72fe72dfbcf5.json.gz",
+      "bytes": 908,
+      "sha256": "007f998fdb38b7302ba864f20ee898076174df6d1ad7311b1d28106f9b2998e7"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/7e0e71be6971e3b2dd5119bfee6dfb92544eb826a830a922867f5747fa442596.json.gz",
+      "bytes": 12572,
+      "sha256": "8deb777450841f147c06229f08b2db5feb9defc382761383e8a355aa50f80e04"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/82c72bce8c0204f9903f9f7fdbd8f8c8024ac5b8303738e403ed7c9a32b50ae7.json.gz",
+      "bytes": 1688,
+      "sha256": "c29b3f0a1575a531f284a67f3e2743426ca0a93a0b64de89b019804860e00c3b"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/862a97d87be01edc983492cee55cf8be8a6b8f9d48c35aef26ec4bd01192f2c3.json.gz",
+      "bytes": 53016,
+      "sha256": "ed2bb97bd4693f3ebd1eaf12d11294e89f68a530c489b608e76a496122503ce0"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/8ba1164623b19895da1c99e488dd6bf3f6556e916accd5aba1960ab2a826586c.json.gz",
+      "bytes": 907,
+      "sha256": "b74337bdf9fd315ede497a6d7d414857131c459b49c5422e94fc30e513adaeec"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/8ed39eafb78aa89c32846292a8d4b8a145677e6ccd4d6fde053b54ba6fe0a0cc.json.gz",
+      "bytes": 1406,
+      "sha256": "6fb116c5965bb6f04d9120e20affece17ecebc7cbf60f32a6eb233bcbe01b86b"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/96d22812ff7e7d744e9c673f6bc3e94a7b370e95d26f9cf2062c6185d2d47491.json.gz",
+      "bytes": 2446,
+      "sha256": "11b9721cd4ef5a1b04dce7cacde399353030c57ad7f4c044e86388eee1919616"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/9a91a631d06d7a74fbfe6146014097e9d5f8f1c97afa94f4c4e91df4327c1cf8.json.gz",
+      "bytes": 53026,
+      "sha256": "6857b813d9147419de584c4107724c1ab285f580f0c16a74addf3f56ae752a33"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/9d478a27095b2ae05abb70b44f762c956fc7d0cdac9e84f0f131084a177e33b0.json.gz",
+      "bytes": 1492,
+      "sha256": "32018d7cb4d29027876e799a2a485716d57500408cc406b254fe18cf9533ecc2"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/a54a955441977029420da3763a2219c4aaad3d72c3421bbb9125e9c0583d53fc.json.gz",
+      "bytes": 2444,
+      "sha256": "946fda0ad16aea34b9cb2e0b61961c69df4920ea7876e0e80bdd51d05c53c068"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/ac76da7cfb5018dc8619754ea63bf13447c16dadcda92e30954d3d4b97097434.json.gz",
+      "bytes": 919,
+      "sha256": "23b84b41a4cedd27f8ecf1ecfb16da7758165a3f6bee651f4b54a905d86d33a5"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/c2b6a47cd3ae6113d4eab253297dc84257acbb511647e072b9476f0bf1581cdc.json.gz",
+      "bytes": 924,
+      "sha256": "cb2a1914c33a852a2b37004288a1cf24fdd0da3ea6e29a3cbca5f13bbb467b4a"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/c4073e9f46701d4a742f64e70e0c5ddd84d55e795d5d78da72d43806dc9949a9.json.gz",
+      "bytes": 1516,
+      "sha256": "20bef472aba4d64dcab1203d4171e740eecee363fcb61fe9a7e29ed4bcefcf72"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/c929dbc5e9c8698f5eff7d2fb8101e823cc2483f92ea1b28ccae9787e3c8b731.json.gz",
+      "bytes": 51667,
+      "sha256": "09c3c0caf9af85c582715813c08076ba3cd6eb3c2c5bc9ba935ab205a0d50d5c"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/d19868d50ae41e07222e587acbe36838b4216d2be4459ffd1cade4392cc44ed3.json.gz",
+      "bytes": 2279,
+      "sha256": "774438f39f8d104e8f817b7da26d03b5280d4077bc09a0f7b7bf8a046c3b7e09"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/d199e832cd85136347dec1fc405b5d6d0658db425f1c4f8e87652098b5da6582.json.gz",
+      "bytes": 921,
+      "sha256": "aa7aa318fc958e9baa230da279fce25becc8a1af71230944e686e94628c9df07"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/f1ffadb8ce51b8ae90a32ef6c2366be787be873c7ab4dcb318fcf7a5f9b4de22.json.gz",
+      "bytes": 923,
+      "sha256": "02239cf063e67abba662c916471cce57faaca4ae86a41d9d091bee6359a4c2b4"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/responses/fc02f5a8b524d4d3cf5ae6809fc5b37b66fdf7806d06b5c7369fbff2447f7c68.json.gz",
+      "bytes": 2283,
+      "sha256": "d80a4b36d66f0b502b6909ced735676ee87702470fd0eec9e9a16bdcc0af1ba4"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-components/summary.json",
+      "bytes": 4940,
+      "sha256": "1bee6f186f90655450b972438c5c0abded1f5138f534b88b1cf096ebfb29d32a"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/cursor-run.log",
+      "bytes": 86282,
+      "sha256": "82312ad76c1fe60075b401e0d86b25b79f1185487fd4369da0539389dfb9b1e7"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/evidence-files.json",
+      "bytes": 31082,
+      "sha256": "326c14d22fd9b48dd91b2c209d5e4559bc4bce73571ed88ca80702ca49e65448"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/evidence-files.txt",
+      "bytes": 12374,
+      "sha256": "deced0cb1d29a0b5d820883ddd1e7836f3ae9291f1cde9432d49913a0bf5e92d"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/followed-topology/followed_topology-profile.txt",
+      "bytes": 14692,
+      "sha256": "ed41973de3f55003b4e146cb5adde71b5fc71af31d40507b3a2681fad753d86c"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/followed-topology/followed_topology.pstats",
+      "bytes": 31596,
+      "sha256": "e72526a6b193747e26d017e3f4660fc9e803ce752ad4bea12c33128dbc64144b"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/followed-topology/response-verification.json",
+      "bytes": 1362,
+      "sha256": "67c6336181eeb1c9fe2c9cedaae780ece8adcb228d75f8d4ee42aa325a3bef7b"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/followed-topology/responses/017b893483c5ca8231aaf9ea2db1b92bae23ecc81971571ada5d3f6b4321fa8d.json.gz",
+      "bytes": 16094,
+      "sha256": "585ba177e305f6f1d10ccc1c623f5acb2bb21525750463faaa03d9a8fc98f78e"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/followed-topology/responses/0f0620754136591451c7956890e03c8f020b15a57c277c66cb0fcc38e3e54fa5.json.gz",
+      "bytes": 10821,
+      "sha256": "c50f1c303aa68c22905872c1840c2833669c5178f58a7408a1b553829f1b44b0"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/followed-topology/responses/116f26b2bedae32e51448e3c8ff80242ed4b105a9c31a17e6c804f2bace343eb.json.gz",
+      "bytes": 16674,
+      "sha256": "95a070d8403e596560fd1678ab2f1c1b6d6b14e496f41bd0b0fa16e31e1653ad"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/followed-topology/responses/118fea7f579e202cc0ebc0b20002bf92419066bf7b81387f9fc3b8d8625a23a9.json.gz",
+      "bytes": 10830,
+      "sha256": "2f159498af3ead03df5a2e6907ea309ab8918e814f21627411260f4a043fb4f0"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/followed-topology/responses/5b4b98c5d3396d1a6ae1c17580cab2e4f164e74f4d7efcba74b16a10abf22d58.json.gz",
+      "bytes": 9969,
+      "sha256": "50f77d9254198eeed221a203587ffa847263ac00e54e61c2423d01655e4ea0d9"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/followed-topology/responses/5e0554130b05a1d328377916abdf3070e5faecfa470ae9268496fa67f4f121af.json.gz",
+      "bytes": 9985,
+      "sha256": "abb01062491bb5005de7adae3ed60107cda9273927c8abeb4544baa80a45a0b2"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/followed-topology/responses/b0840f7ff11ad13c4768e7f827c1efcd53745d5379baad252de22a00a42fbdd1.json.gz",
+      "bytes": 16611,
+      "sha256": "afd41e7ca12ec1f7d0d4e9c4bb39bd20682e45eb4999faedfa995ed272f13466"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/followed-topology/responses/e398dbb01c580b16b25ea161c0a3aea2d1e28d1a60164fc0829394c502506600.json.gz",
+      "bytes": 16691,
+      "sha256": "3b5e9589799c5332235a39fe30964cf054fbd5a31b3c8892327e8980aeb2488c"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/followed-topology/responses/e7d2786de34144747a55b067f71f20b35deee8abdcd625a474797b5cc5cc0624.json.gz",
+      "bytes": 9978,
+      "sha256": "d07df575db2d5ed9796a10c092c2dc2513863d8b6eb4acc1c8eb9fabe9c6a21a"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/followed-topology/results.json",
+      "bytes": 128235,
+      "sha256": "f0740449c12f60f26c411abc0b5247a5fa779c3c7fe3dfc077dad19f3d731a52"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/followed-topology/summary.json",
+      "bytes": 713,
+      "sha256": "6c1bcfbdbcd2036c66c7c840a9bf6d8405df93514d3afb8dc2da2583b1a78e68"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/measurement-plan.md",
+      "bytes": 9645,
+      "sha256": "611058506651efe1a3fba17e7536c3986fdab146f0cbcb774515a1290fc6de26"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/probe_sidecar_path.py",
+      "bytes": 1955,
+      "sha256": "4f39ebc4c2f409b8dd0314309702b092f48b97a8e6e543be69d078826eae8672"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/profile_followed_topology.py",
+      "bytes": 9890,
+      "sha256": "7925fd893591a06c4447c72e3bf69b8b08ce1dfc5507cd746e7e6323cfddc468"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/run-1m-long-path.ps1",
+      "bytes": 1299,
+      "sha256": "bdad95c540661d3f12937ff3ae1b4e18b68786d7cfcf00575dfc4f33268b7c82"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/run-1m.ps1",
+      "bytes": 1325,
+      "sha256": "79d4004a3fcda68029299bd72f4c9ebff1e31fdb2d19bb50b18aab1eabfedae4"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/run-cursor.ps1",
+      "bytes": 1396,
+      "sha256": "0a979ddbbd2d7e414da8f8e5d8c222fdbf6d9b702224f451a6669dc52cdc71b3"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/run-topology.ps1",
+      "bytes": 568,
+      "sha256": "a312cf9634bc462546fbfd08d63ea0638c0dd2b7b6beadbad54888fe10322056"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/sidecar-path-probe.json",
+      "bytes": 2344,
+      "sha256": "047792767dea6cdcb805757398073ce7a968744ae3e20a6cde91cca3244403ec"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/summarize_cursor_components.py",
+      "bytes": 4083,
+      "sha256": "e0db962d52a3c30e0733d95affc15c8d85f3d8778d8d23b95250d6c273b131a0"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/perf-investigation/topology-run.log",
+      "bytes": 91203,
+      "sha256": "4739e0568c973ff7781f6fb726a3af29260f544b3f88d960ed97e23deae296b6"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/relative-120-fabric-detail.txt",
+      "bytes": 2871,
+      "sha256": "8eb1c446ddb10cddc5c0f201bb38154f9158eb5b0fccd2ee3b6a33d3a5d411f3"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/relative-120-fabric.json",
+      "bytes": 11061,
+      "sha256": "68fd722871507ba765490399e15a7ff10873d75a2a79b98b2e7e1a15a6b5bf54"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/relative-120-node.json",
+      "bytes": 34250,
+      "sha256": "8c817483bf917a0ecbf80acd76e101a1dccce17511aa4457c6f26187b570f913"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/relative-360-fabric.json",
+      "bytes": 11061,
+      "sha256": "94c0f6f9c8255b60a1f47920dc2ffb1850b13f613618705e64623b0e64d8c58a"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/relative-360-node.json",
+      "bytes": 34790,
+      "sha256": "f7f6f383db4f43a3dc40aa10fb5ad86742989fc66918b9d651f2f93598399c6f"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/relative-360-node.png",
+      "bytes": 99743,
+      "sha256": "584d35fe189b2322e9398b0a0a08dc747540afe5f7c69fce3dc508c3a500c931"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/skill-popup-trial/dispatch.md",
+      "bytes": 1077,
+      "sha256": "7c9c4bfcb562cf8c8816b2aa6d68064d4b361853188a0af26111e5275564b4df"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/skill-popup-trial/findings.md",
+      "bytes": 2684,
+      "sha256": "1f5ae5964ef493b2e9448d92ef5ae805b6d80b84e45f00dc3d0025a919c01fe1"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/skill-popup-trial/inventory.txt",
+      "bytes": 854,
+      "sha256": "e33b70bb932620b78581558ce5423b5910239c9b32ccb8c94fdbf8b782109f2f"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/skill-popup-trial/route-tests.txt",
+      "bytes": 5827,
+      "sha256": "585a7d773efef0a20e86d2e367b1f21d9912606c0df0303b2ff5dbe49f7c0f44"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/skill-validation.md",
+      "bytes": 2337,
+      "sha256": "9f8f867cb63539dc2c1dc91293f9ab15254944e58264500a08ab92467b429314"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/type-stubs-utf8.txt",
+      "bytes": 45,
+      "sha256": "8c125d447ec4327344853aa51157b761365eaeaffe90da0cbc7f79211c33a23a"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/type-stubs-workspace-temp.txt",
+      "bytes": 618,
+      "sha256": "f439db80cb95a260f97ca63cca2c6b473b0c3552de7838242b6c8cdc1fb2cfdd"
+    },
+    {
+      "path": ".runtime/history-correlation-v5-repairs-2026-10-24/type-stubs.txt",
+      "bytes": 188,
+      "sha256": "d306426bdec698a2799e4c93e09defb0ab83f47f0528f3a15281298378291ca7"
+    },
+    {
+      "path": "frontend/tests/node_navigation_basis.test.mjs",
+      "bytes": 4492,
+      "sha256": "07ab0fd90bc8db2fa5632a73c149c5bbef4aea2ffba089ca6df9cc657c2cb89a"
+    }
+  ]
+}

@@ -430,6 +430,7 @@ function bootstrapDatasetPath() {
   if (!navigationContext.nodeId) return "/v1/workspace";
   const target = new URL(`/v1/nodes/${encodeURIComponent(navigationContext.nodeId)}/workspace`, window.location.origin);
   const parameters = {
+    revision_id: navigationContext.revisionId,
     plugin_set_id: navigationContext.pluginSetId,
     plugin_id: navigationContext.pluginId,
     projection_id: navigationContext.projectionId,
@@ -480,16 +481,22 @@ function renderTopologyNavigationBanner() {
   const localNode = topologyLocalMember();
   const resourcePresent = navigationContext.resourceId && state.resourceById.has(navigationContext.resourceId);
   navigationContext.focusAvailable = Boolean(local && (!navigationContext.resourceId || resourcePresent));
-  const basis = navigationContext.basisKind === "relative_to_watermark"
-    ? `relative capture context${navigationContext.basisOffsetNs ? ` (${formatDuration(navigationContext.basisOffsetNs)})` : ""}; opened at its resolved time`
-    : navigationContext.timeNs ? `resolved time ${navigationContext.timeNs} ns` : "topology query context";
+  const resolved = state.dataset?.node_snapshot?.resolved_time;
+  const requestedTime = Boolean(navigationContext.basisKind || navigationContext.timeNs || navigationContext.basisOffsetNs);
+  const requested = navigationContext.basisKind === "relative_to_watermark"
+    ? `relative watermark context${navigationContext.basisOffsetNs ? ` (${formatDuration(navigationContext.basisOffsetNs)})` : ""}`
+    : navigationContext.timeNs ? `requested ${navigationContext.timeNs} ns ${navigationContext.clockDomain || "utc"}` : "topology query context";
+  const resolvedTime = resolved?.local_time_ns;
+  const basis = resolvedTime != null
+    ? `${requested}; resolved native time ${resolvedTime} ns${String(state.cursorNs) !== String(resolvedTime) ? `; showing ${state.cursorNs} ns within the capture` : ""}`
+    : requestedTime ? `${requested}; requested time unresolved, showing capture time` : "topology query context; showing capture time";
   const availability = navigationContext.focusAvailable
     ? navigationContext.resourceId ? "The scoped resource is available in this loaded revision." : "The member revision is loaded."
     : local
       ? "The referenced resource is not present in this loaded revision; no local resource was selected."
       : `This workspace contains ${localNode ? topologyNodeId(localNode) : "a different member"}; the referenced member is topology-only here, so its local timeline is not being implied.`;
   const returnHref = safeLocalNavigationTarget(navigationContext.returnTo);
-  banner.classList.toggle("is-warning", !navigationContext.focusAvailable);
+  banner.classList.toggle("is-warning", !navigationContext.focusAvailable || (requestedTime && resolvedTime == null));
   banner.innerHTML = `<div><span class="inspector-kicker">MULTI-NODE CONTEXT</span><strong>${escapeHtml(navigationContext.nodeId || navigationContext.memberId || "selected member")}</strong><small>${escapeHtml(`${basis} · ${availability}`)}</small></div><div class="topology-navigation-tags">${navigationContext.pluginSetId ? `<code>${escapeHtml(navigationContext.pluginSetId)}</code>` : ""}${navigationContext.projectionId ? `<code>${escapeHtml(navigationContext.projectionId)}</code>` : ""}${navigationContext.perspectiveId ? `<code>${escapeHtml(navigationContext.perspectiveId)}</code>` : ""}${navigationContext.contextId ? `<code>context ${escapeHtml(navigationContext.contextId)}</code>` : ""}</div><a href="${escapeHtml(returnHref)}">Back to multi-node topology</a>`;
 }
 
@@ -12799,8 +12806,11 @@ async function initialize() {
     state.timelineWindowStartNs = state.viewStartNs;
     state.timelineWindowEndNs = state.viewEndNs;
     state.zoom = 1;
-    state.cursorNs = clampNs(toNs(navigationContext.timeNs || declaredCaptureNs, state.viewEndNs));
-    state.cursorSelected = Boolean(navigationContext.timeNs);
+    const navigationTime = navigationContext.nodeId
+      ? state.dataset?.node_snapshot?.resolved_time?.local_time_ns
+      : navigationContext.timeNs;
+    state.cursorSelected = navigationTime !== null && navigationTime !== undefined && navigationTime !== "";
+    state.cursorNs = clampNs(toNs(state.cursorSelected ? navigationTime : declaredCaptureNs, state.viewEndNs));
     if (isScaleMode()) {
       state.laneMode = "custom";
       state.explicitLaneIds = new Set(initialScaleLaneIds());

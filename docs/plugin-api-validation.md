@@ -134,6 +134,8 @@ views, limits and time basis. Profile clock-uncertainty probes and relationship
 history traversal before adding caches: a bounded result page need not bound
 intermediate work. Test disconnect propagation separately; an aborted browser
 fetch or progress-poll count does not attribute server CPU or prove cancellation.
+An action-to-follow-up observation gap only bounds completion time; separate
+sampled CPU bursts from later idle time, and mark actions outside sampler coverage.
 Keep resource-search text and selected kind explicit in cursor benchmarks. Compare
 matched fresh timestamps with search empty and active, plus same-time cache hits;
 separate first lazy-history materialization from later reconstruction. Preserve
@@ -535,7 +537,7 @@ focus. A stationary activation control or a single animation-frame delay does
 not establish correct placement throughout scrolling.
 
 Native keyboard focus can begin smooth scrolling while its target is still
-fully outside the viewport. Settle the intentional timeline focus reveal before
+fully outside the viewport. Settle the intentional focus reveal before
 opening a popup or dismissing it for clipping. Keep nearest alignment for visible
 targets and preserve the virtual log's separately calculated scroll position.
 Native nearest alignment can still place an upward target behind the sticky
@@ -543,8 +545,12 @@ header or a horizontal target behind its lane label. Reuse timeline reveal
 correction for that occlusion, leaving fully and partially visible targets in
 place. Validate Enter/Space starting above and below the viewport and behind a
 lane label, including individual source markers; then repeat from visible and
-partially visible targets. Synthetic rectangles alone do not establish native
-focus/scroll ordering.
+partially visible targets. Apply the same ordering to route service strips:
+on a settled trace, scroll a focused predecessor off-screen, then Tab to the strip
+and immediately press Enter/Space. Verify the first activation after scrolling
+settles, with a second activation as a comparison rather than a repair hidden
+by the test. Synthetic rectangles alone do not establish native focus/scroll
+ordering.
 
 Passive focus restoration after a render is separate from an intentional reveal.
 Calling `focus({preventScroll: true})` still runs focus handlers, so a handler
@@ -708,6 +714,14 @@ typed point-to-point circuit against its local interface at down and restored
 times, then repeat past-present-past. Assert that the traced segment actually
 crosses the changed circuit; parallel routes involving both nodes are insufficient.
 Single-node native cursor offsets and fabric UTC times can have different origins.
+Follow fabric node/resource links across an event boundary using unequal clock
+offsets; compare the actual native cursor and resource state with the server's
+resolved member basis, not a selector echoed in the URL or banner. Keep the
+original UTC/relative request separate from the resolved native instant. Repeat
+nonzero relative offsets using the selected projection watermark, including one
+distinct from capture, and return to fabric without losing the original basis.
+Exercise stale revision/member selectors and unresolved clocks; none may silently
+open at latest capture while claiming the requested time was resolved.
 Use exact timestamps and failed/stale events as controls. Graph and resource-table
 refreshes settle independently, so save both settled results before comparing them.
 Use unequal clock offsets to verify that each continuation's observation is in

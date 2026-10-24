@@ -203,11 +203,12 @@ strips as well as graph inspectors;
 direction or trace changes must still retire obsolete context.
 At narrow widths, hit-test adjacent controls with a service preview open;
 viewport containment alone does not establish that a pointer can reach them.
-Verify native keyboard activation after scrolling too.
-Start Enter/Space from timeline targets above and below the viewport, including
-an upward source-marker reveal and horizontal label occlusion. Check the settled
-card; use visible and partially visible pointer targets and virtual-log focus
-as controls.
+Verify native Tab then immediate Enter/Space while focus scrolls an off-screen
+target into view, including route service strips. Repeat after scrolling settles:
+a working second activation must not conceal a discarded first activation.
+Include timeline targets above/below the viewport, upward source-marker reveal
+and horizontal label occlusion; use visible/partially visible pointer targets
+and virtual-log focus as controls.
 Focus a density bin, scroll it out of view, and wait for row replacement; passive
 focus repair must preserve scroll and keep the clipped card dismissed.
 Compare an already-open cluster with its timeline after Apply/Clear/Apply range
@@ -227,8 +228,13 @@ For historical route checks, compare row/decision validity and the actual traver
 link with the applied per-node time and clock bounds. Test direct tracing as well
 as table-seeded tracing; hiding an invalid table row must not leave a trace bypass.
 Use unequal node clock offsets to check each executing hop's observation domain
-independently of its source-evidence attribution. Regenerate persisted fixture
-projections after changing their producer before validating the browser.
+independently of its source-evidence attribution. Follow fabric links into a node
+and compare the resolved native cursor and resource state at an event boundary,
+not only URL/banner round trips. Repeat nonzero relative offsets against the
+selected projection watermark, including a watermark distinct from capture;
+unresolved or stale context must not appear successfully resolved. Regenerate
+persisted fixture projections after changing their producer before validating the
+browser.
 Compare typed-link status with its local resource history through down, restore,
 and past-present-past queries. For resource correlations, distinguish instant
 edges from viewport-wide history and failed intent from applied state. Wait for

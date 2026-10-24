@@ -128,6 +128,20 @@ that case. A complete node history uses `history_mode: server-windowed` and a
 matching top-level `history_transport.mode`. Event, source-record, density, and
 detail endpoints in `history_transport` are revision-scoped.
 
+Full node workspaces accept an optional `revision_id`; a mismatch with the
+selected member returns 409 before loading its client dataset. When navigation
+includes a time basis and topology support is available, `node_snapshot.basis`
+retains the request while `node_snapshot.resolved_time` contains the existing
+scoped clock-resolution envelope. Absolute UTC time is mapped into the member's
+native domain; relative time uses the selected projection's watermark. This
+metadata resolution does not execute a topology projection. The browser uses
+`resolved_time.local_time_ns` as its native cursor, clamped to the loaded history
+with the displayed time disclosed. It must not reinterpret the requested UTC
+timestamp as native time. With no requested basis, navigation opens at capture;
+an unresolved requested time is explicitly disclosed as a capture-time fallback.
+`resolved_time` is null when no resolution was requested or topology support is
+unavailable. Invalid projection selectors remain request errors.
+
 For bounded node snapshots, the browser uses the recorded `node_snapshot`
 query-node envelope: `resolved_basis.requested`, `resolved_basis.clock_policy`,
 and the uniquely matching `node.plugin_results` entry. Its node/member/revision,

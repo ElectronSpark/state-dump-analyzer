@@ -220,13 +220,13 @@ instance key; never fall back to a detached marker. Keep open popup geometry
 aligned after layout renders as well as document or nested scrolling, and close
 it if its instance disappears or becomes fully clipped. Intersect the anchor's
 own scrollport with the document and sticky occlusion; preserve partial visibility
-and clamp the card to the viewport. Settle intentional timeline focus reveal
-before clipping-driven dismissal; native nearest alignment can leave a target
-behind sticky headers or labels, so reuse the timeline reveal path for that
-occlusion. Passive focus restoration after rendering must retain saved scroll
-positions without invoking reveal. Keep visible pointer targets stationary and
-preserve virtual-log scroll ownership. Opening an overlapping control surface should
-dismiss the older inspection card. Update derived range facts in an open card
+and clamp the card to the viewport. Settle intentional focus reveal before
+clipping-driven dismissal, including route service strips; native nearest
+alignment can leave a target behind sticky headers or labels, so use the
+component's reveal correction for that occlusion. Passive focus restoration after
+rendering must retain saved scroll positions without invoking reveal. Keep visible
+pointer targets stationary and preserve virtual-log scroll ownership. Opening an
+overlapping control surface should dismiss the older inspection card. Update derived range facts in an open card
 in place, preserving focused controls, loaded detail pages and scroll. Reveal
 the actual marker or log row in both axes of its nested scrollport and the
 browser viewport, accounting for sticky labels and headers. Share glyph-spacing
@@ -247,6 +247,11 @@ declared membership evidence rather than route endpoints or labels for membershi
 Node-local forwarding timestamps belong to the executing node's clock even when
 their evidence references another device. Convert cross-node observations through
 the declared clock mapping; preserve the source evidence's independent validity.
+On fabric-to-node navigation, keep the requested basis separate from its validated
+member-local result. Initialize the native cursor from that resolved result;
+do not interpret requested UTC as native time. Relative offsets use the selected
+projection's watermark rather than an assumed capture time. Unresolved context must not claim
+successful resolution or silently fall back to the latest capture.
 Regenerate persisted demo projections when their producer changes.
 Persisted relationship starts must match each attachment event, including later
 services sharing existing endpoints; endpoint presence cannot repair early edges.

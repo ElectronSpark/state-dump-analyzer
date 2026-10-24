@@ -838,6 +838,7 @@ def workspace_dataset() -> Response:
 @api_router.get("/v1/nodes/{node_id}/workspace")
 def node_workspace_dataset(
     node_id: str,
+    revision_id: str | None = None,
     plugin_set_id: str | None = None,
     plugin_id: str | None = None,
     projection_id: str | None = None,
@@ -903,6 +904,33 @@ def node_workspace_dataset(
             status_code=404,
             detail="unknown topology member",
         ) from lookup_error
+    if revision_id is not None and revision_id != descriptor.revision_id:
+        raise _RuntimeHTTPResponse(status_code=409, detail="node workspace revision has changed")
+    requested_basis = {
+        "kind": basis_kind or ("absolute_time" if time_ns is not None else "relative_to_watermark"),
+        **({"time_ns": str(time_ns), "clock_domain": clock_domain}
+           if time_ns is not None else {"offset_ns": str(basis_offset_ns or 0)}),
+    }
+    resolved_time = None
+    if (
+        (basis_kind is not None or time_ns is not None or basis_offset_ns is not None)
+        and current_runtime_session().topology_provider is not None
+    ):
+        resolved_time = _multi_node_call(
+            _multi_node_topology().resolve_node_navigation_time,
+            node_id,
+            {
+                "basis": requested_basis,
+                "clock_policy": clock_policy,
+                "revision_id": descriptor.revision_id,
+                **{key: value for key, value in {
+                    "plugin_set_id": plugin_set_id,
+                    "plugin_id": plugin_id,
+                    "projection_id": projection_id,
+                    "status_perspective_id": status_perspective_id,
+                }.items() if value is not None},
+            },
+        )
     # Once the node has been validated, load its safe client projection through
     # the ordinary tracked normalized-data boundary.
     client = client_dataset(node_id=node_id)
@@ -912,6 +940,7 @@ def node_workspace_dataset(
         "revision_id": descriptor.revision_id,
         "event_count": descriptor.event_count,
         "resource_count": descriptor.resource_count,
+        "resolved_time": resolved_time,
         "basis": {
             "kind": basis_kind
             or ("absolute_time" if time_ns is not None else "relative_to_watermark"),

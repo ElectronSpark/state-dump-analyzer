@@ -8,6 +8,7 @@ import uuid
 from collections import UserDict
 from itertools import combinations, permutations
 from types import SimpleNamespace
+from unittest.mock import patch
 from urllib.parse import parse_qs, urlparse
 
 from fastapi.testclient import TestClient
@@ -1710,6 +1711,12 @@ class MultiNodeTopologyTests(unittest.TestCase):
         )
         self.assertIsNone(resolved["query_time_ns"])
         self.assertIsNone(resolved["absolute_min_ns"])
+        with patch.object(service, "query", side_effect=AssertionError("navigation must not project a graph")):
+            navigation_time = service.resolve_node_navigation_time(
+                "node-a",
+                {**request["node_queries"][0], "basis": request["basis"], "clock_policy": "strict"},
+            )
+        self.assertEqual(navigation_time, resolved)
         self.assertEqual(
             resolved["watermark_source"],
             "projection_declaration",
@@ -1893,6 +1900,10 @@ class MultiNodeTopologyTests(unittest.TestCase):
         )
         self.assertEqual(workspace.status_code, 200, workspace.text)
         self.assertEqual(
+            workspace.json()["node_snapshot"]["resolved_time"],
+            payload["node"]["resolved_time"],
+        )
+        self.assertEqual(
             workspace.json()["node_snapshot"]["basis"],
             {
                 "kind": "relative_to_watermark",
@@ -1994,6 +2005,7 @@ class MultiNodeTopologyTests(unittest.TestCase):
 
         self.assertEqual(query["basis_kind"], ["absolute_time"])
         self.assertEqual(query["time_ns"], [time_ns])
+        self.assertEqual(query["clock_domain"], ["utc"])
         self.assertNotIn("basis_offset_ns", query)
         self.assertNotIn("offset_ns", query)
 
@@ -2018,6 +2030,66 @@ class MultiNodeTopologyTests(unittest.TestCase):
             workspace.json()["node_snapshot"]["basis"]["time_ns"],
             time_ns,
         )
+
+    def test_node_workspace_resolves_utc_through_member_clock_without_projection(self) -> None:
+        service = generated_topology_demo()
+        requested = 1759680179993000000
+        for node_id in ("node-a", "node-b", "node-d"):
+            node = next(item for item in service.contract["nodes"] if item["node_id"] == node_id)
+            with self.subTest(node_id=node_id), patch.object(
+                MultiNodeTopologyService, "query", side_effect=AssertionError("navigation must not project a graph")
+            ):
+                response = self.client.get(
+                    f"/v1/nodes/{node_id}/workspace",
+                    params={
+                        "revision_id": node["revision_id"],
+                        "basis_kind": "absolute_time", "time_ns": str(requested),
+                        "clock_domain": "utc", "clock_policy": "best_effort",
+                        "context_id": "untrusted-or-expired", "local_time_ns": "1",
+                    },
+                )
+            self.assertEqual(response.status_code, 200, response.text)
+            snapshot = response.json()["node_snapshot"]
+            self.assertEqual(snapshot["basis"]["time_ns"], str(requested))
+            resolved = snapshot["resolved_time"]
+            self.assertEqual(resolved["query_time_ns"], str(requested))
+            self.assertEqual(
+                resolved["local_time_ns"],
+                str(requested + int(node["clock"]["local_minus_absolute_ns"])),
+            )
+            self.assertEqual(resolved["node_id"], node_id)
+            self.assertEqual(resolved["revision_id"], node["revision_id"])
+
+    def test_node_workspace_rejects_stale_revision_and_foreign_projection(self) -> None:
+        basis = {"basis_kind": "absolute_time", "time_ns": "1759680179993000000"}
+        for extra, status in (
+            ({"revision_id": "old/revision"}, 409),
+            ({"plugin_set_id": "node-b.generated.v1"}, 422),
+            ({"projection_id": "missing-projection"}, 422),
+            ({"clock_domain": "node-d:generated-realtime"}, 422),
+            ({"clock_policy": "unknown"}, 422),
+        ):
+            with self.subTest(extra=extra):
+                response = self.client.get("/v1/nodes/node-d/workspace", params={**basis, **extra})
+                self.assertEqual(response.status_code, status, response.text)
+        response = self.client.get("/v1/nodes/missing-node/workspace", params=basis)
+        self.assertEqual(response.status_code, 404, response.text)
+
+    def test_node_navigation_without_clock_preserves_unresolved_state(self) -> None:
+        original = generated_topology_demo()
+        contract = json.loads(json.dumps(original.contract))
+        node = next(item for item in contract["nodes"] if item["node_id"] == "node-a")
+        node["clock"] = None
+        service = MultiNodeTopologyService(
+            contract=contract, topology_profiles=original.topology_profiles,
+            topology_metadata=original.topology_metadata,
+        )
+        request = {"basis": {"kind": "absolute_time", "time_ns": "1759680179993000000"}}
+        resolved = service.resolve_node_navigation_time("node-a", request)
+        self.assertIsNone(resolved["local_time_ns"])
+        self.assertEqual(resolved["resolution"], "clock_unaligned")
+        with self.assertRaises(MultiNodeTopologyRequestError):
+            service.resolve_node_navigation_time("node-a", {**request, "clock_policy": "strict"})
 
     def test_invalid_cross_node_projection_selection_is_rejected(self) -> None:
         response = self.client.post(

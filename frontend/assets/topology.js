@@ -8480,6 +8480,18 @@ function bindRoutePresentationElements(scope) {
     element.addEventListener("mouseleave", () => { if (!("PointerEvent" in window)) leave(); });
     element.addEventListener("focus", () => {
       if (state.routePresentationSuppressFocusPreview) return;
+      // Native focus starts smooth scrolling before the trigger is visible.
+      // Finish that intentional reveal before clipping can discard its preview.
+      const rect = element.getBoundingClientRect();
+      const headerBottom = Math.max(0, document.querySelector(".topbar")?.getBoundingClientRect().bottom || 0);
+      if (rect.bottom <= headerBottom || rect.top >= window.innerHeight
+          || rect.right <= 0 || rect.left >= window.innerWidth) {
+        element.scrollIntoView({ behavior: "instant", block: "nearest", inline: "nearest" });
+        const revealed = element.getBoundingClientRect();
+        if (revealed.bottom <= headerBottom) {
+          window.scrollBy({ top: revealed.top - headerBottom - 12, behavior: "instant" });
+        }
+      }
       showRoutePresentationPreview(groupId, element);
     });
     element.addEventListener("blur", () => scheduleHideRoutePresentationPreview());
@@ -9269,13 +9281,15 @@ function applyNodeNavigationBasis(url, basis = {}, requestBasis = {}) {
   }
 
   const exactTime = url.searchParams.get("time_ns")
-    ?? basis.queryTime
-    ?? requestBasis.time_ns;
+    ?? requestBasis.time_ns
+    ?? basis.queryTime;
   url.searchParams.delete("basis_offset_ns");
   url.searchParams.delete("offset_ns");
   if (exactTime !== null && exactTime !== undefined) {
     url.searchParams.set("time_ns", String(exactTime));
   }
+  // This is the original fabric request, not the member's native cursor.
+  url.searchParams.set("clock_domain", requestBasis.clock_domain || "utc");
   return url;
 }
 
@@ -9289,9 +9303,10 @@ function fallbackNodeHref(node, resource = null) {
   url.searchParams.set("revision_id", node.revision_id);
   if (resource?.resource_id) url.searchParams.set("resource_id", resource.resource_id);
   applyNodeNavigationBasis(url, basis, requestBasis);
-  url.searchParams.set("clock_domain", basis.clock_domain || requestBasis.clock_domain || "utc");
+  if (!url.searchParams.has("clock_domain")) url.searchParams.set("clock_domain", basis.clock_domain || requestBasis.clock_domain || "utc");
   url.searchParams.set("clock_policy", state.query?.request?.clock_policy || requestBasis.clock_policy || "strict");
   url.searchParams.set("plugin_set_id", plan.plugin_set_id);
+  if (plan.plugin_id) url.searchParams.set("plugin_id", plan.plugin_id);
   url.searchParams.set("projection_id", plan.projection_id);
   url.searchParams.set("status_perspective_id", plan.status_perspective_id);
   if (state.query?.context_id) url.searchParams.set("context_id", state.query.context_id);
