@@ -701,6 +701,20 @@ an omitted focus means the response does not cover it, not that it has no edges.
 Compare full/focused scope, explicit inactive roots, and unknown roots without
 raising graph bounds to hide missing coverage.
 
+Compare persisted relationship intervals against per-service attachment events,
+including a later service sharing an already-existing ES and primary endpoint.
+At one nanosecond before attachment, its membership and active-path edges must
+be absent even when both endpoint resources exist. Check the exact event and
+rewind, with table home mode as an independent control. Derive event affected
+service counts from actual membership, including uneven small layouts.
+
+For route-form compatibility, edit VRF, family and type in different orders and
+verify both settled controls and the submitted request. Preserve the explicitly
+changed advertised field while reconciling dependent controls. For narrow
+correlation graphs, measure card/label bounds and actual pointer hit targets;
+SVG label presence or successful Enter activation does not establish clickability.
+Repeat after horizontal scroll, full/focused switching and cursor changes.
+
 The generated adapter and core boundary are exercised by:
 
 ```text

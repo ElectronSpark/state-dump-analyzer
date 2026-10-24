@@ -7687,6 +7687,12 @@ function graphEdgeGeometry(edge, positions, height, stageWidth, edgeIndex) {
   };
 }
 
+function focusedGraphCanvasWidth(nodeWidth, labelWidth) {
+  // Adjacent column centers are 35% apart. Reserve the complete label plus
+  // breathing room between the two card edges, including the hover scale.
+  return Math.ceil((nodeWidth * 1.025 + labelWidth + 32) / 0.35);
+}
+
 function validGraphInspection(graph, inspection) {
   if (!inspection?.kind || inspection.id === null || inspection.id === undefined) return null;
   const id = String(inspection.id);
@@ -7825,9 +7831,19 @@ function renderGraph() {
     const statusClass = typeof node.status_class === "string" ? node.status_class : "unknown";
     return `<button class="graph-node${compact ? " compact" : ""}${statusClass === "error" ? " error" : ""}${selected ? " selected" : ""}${role ? ` role-${role}` : ""}" type="button" data-resource-id="${escapeHtml(node.id)}" style="left:${position.x}%;top:${position.y}%;--node-color:${layerColor(node.layer)}">${roleLabel ? `<span class="node-role">${escapeHtml(roleLabel)}</span>` : ""}<span class="graph-node-kindline">${customIcon}<span class="node-kind">${escapeHtml(`${humanLayer(node.layer)} / ${node.kind}`)}</span></span><strong>${escapeHtml(node.label)}</strong><small class="node-status">${escapeHtml(node.status_value || node.status || "unknown")}${node.complete_record === false ? " / endpoint only" : ""}</small></button>`;
   }).join("");
-  stage.innerHTML = graphColumnHeadingsHtml(layout) + svg + nodeHtml;
-  const stageWidth = Math.max(1, stage.clientWidth);
+  stage.innerHTML = '<div class="graph-canvas" style="height:' + height + 'px">'
+    + graphColumnHeadingsHtml(layout) + svg + nodeHtml + '</div>';
+  const canvas = stage.querySelector(".graph-canvas");
   const edgeLayer = stage.querySelector(".graph-edge-layer");
+  // Measure SVG text with one user unit per CSS pixel, then keep that scale
+  // after widening the canvas. Card offsets use CSS pixels too.
+  if (edgeLayer) edgeLayer.setAttribute("viewBox", "0 0 " + Math.max(1, canvas.clientWidth) + " " + height);
+  if (layout.mode === "focus") {
+    const nodeWidth = Math.max(0, ...[...canvas.querySelectorAll(".graph-node")].map((node) => node.offsetWidth));
+    const labelWidth = Math.max(0, ...[...canvas.querySelectorAll(".graph-edge-label")].map((label) => label.getComputedTextLength()));
+    canvas.style.minWidth = focusedGraphCanvasWidth(nodeWidth, labelWidth) + "px";
+  }
+  const stageWidth = Math.max(1, canvas.clientWidth);
   if (edgeLayer) edgeLayer.setAttribute("viewBox", "0 0 " + stageWidth + " " + height);
   const edgePaths = [...stage.querySelectorAll(".graph-edge")];
   const edgeLabels = [...stage.querySelectorAll(".graph-edge-label")];

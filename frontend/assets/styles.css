@@ -1292,6 +1292,15 @@ button.chain-node:hover {
   background-size: 28px 28px;
 }
 
+.graph-stage.mode-focus {
+  overflow-x: auto;
+}
+
+.graph-canvas {
+  position: relative;
+  width: 100%;
+}
+
 .graph-column-headings {
   position: absolute;
   z-index: 3;

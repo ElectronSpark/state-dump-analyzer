@@ -1057,7 +1057,9 @@ def _event_for_phase(
                     "prior_status": "up",
                     "status": "withdrawn",
                     "reason": "peer-link-loss",
-                    "affected_services": 3,
+                    "affected_services": len(range(
+                        es_index, layout.multi_home_service_count, layout.es_count
+                    )),
                 },
                 "effects": effects,
                 "relationship_effects": [],
@@ -1214,7 +1216,9 @@ def _event_for_phase(
                     "prior_status": "withdrawn",
                     "status": "up",
                     "reason": "peer-link-restored",
-                    "affected_services": 3,
+                    "affected_services": len(range(
+                        es_index, layout.multi_home_service_count, layout.es_count
+                    )),
                 },
                 "effects": effects,
                 "relationship_effects": [],
@@ -1810,13 +1814,14 @@ def _relationship_lines(
         etg_id = _etg_id(index)
         backup_id = _backup_ete_id(index)
         es_id = _es_id(_es_index(layout, index))
+        attachment_time = multi_start + index * EVENT_STEP_NS
         withdraw_time = _service_transition_time_ns(
             layout, "mass_es_withdraw", index
         )
         restore_time = _service_transition_time_ns(
             layout, "mass_es_restore", index
         )
-        yield record(etg_id, backup_id, "owns", multi_start, None, "multihome_add")
+        yield record(etg_id, backup_id, "owns", attachment_time, None, "multihome_add")
         backup_next_hop = (
             _etg_id(index + 1)
             if index % 4 == 0 and index + 1 < layout.etg_count
@@ -1826,11 +1831,11 @@ def _relationship_lines(
             backup_id,
             backup_next_hop,
             "next_hop",
-            multi_start,
+            attachment_time,
             None,
             "multihome_add",
         )
-        yield record(etg_id, es_id, "member_of_es", multi_start, None, "multihome_add")
+        yield record(etg_id, es_id, "member_of_es", attachment_time, None, "multihome_add")
         yield record(
             etg_id,
             backup_id,
@@ -1843,7 +1848,7 @@ def _relationship_lines(
             es_id,
             _primary_ete_id(index),
             "active_path",
-            multi_start,
+            attachment_time,
             withdraw_time,
             "multihome_add",
         )
@@ -1950,7 +1955,7 @@ def _relationship_lines(
                 _backup_ete_id(index),
                 _vif_id(index % layout.vif_count),
                 "egresses_via",
-                multi_start,
+                multi_start + index * EVENT_STEP_NS,
                 None,
                 "multihome_add",
             )

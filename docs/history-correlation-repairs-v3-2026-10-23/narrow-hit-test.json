@@ -1,0 +1,57 @@
+{
+  "canvasWidth": 739,
+  "hit": [
+    {
+      "class": "graph-edge-label outgoing is-active is-pinned",
+      "label": "Inspect has_neighbor relationship between node-a/data-bridge-layer/VIRTUAL_INTERFACE/ae-00000 and node-a/control-plane/NEIGHBOR/blue/peer-00374",
+      "role": "button",
+      "tag": "text"
+    },
+    {
+      "class": "graph-canvas",
+      "label": null,
+      "role": null,
+      "tag": "DIV"
+    },
+    {
+      "class": "graph-stage mode-focus is-inspecting has-pinned-inspection",
+      "label": "Resource dependency graph",
+      "role": "group",
+      "tag": "DIV"
+    },
+    {
+      "class": "graph-panel-content",
+      "label": null,
+      "role": null,
+      "tag": "DIV"
+    },
+    {
+      "class": "panel graph-panel",
+      "label": null,
+      "role": null,
+      "tag": "ARTICLE"
+    },
+    {
+      "class": "correlation-section section-wrap",
+      "label": null,
+      "role": null,
+      "tag": "SECTION"
+    }
+  ],
+  "label": {
+    "height": 11.199999809265137,
+    "width": 66.0785140991211,
+    "x": 354.6312561035156,
+    "y": 267.9624938964844
+  },
+  "popup": "RELATIONSHIP\nhas_neighbor\nSource\nae-00000\nnode-a/data-bridge-layer/VIRTUAL_INTERFACE/ae-00000\nTarget\npeer-00374\nnode-a/control-plane/NEIGHBOR/blue/peer-00374\nDirection\nnode-a/data-bridge-layer/VIRTUAL_INTERFACE/ae-00000 → node-a/control-plane/NEIGHBOR/blue/peer-00374\nValidity\n+120.037 s to open\nAt time\n+480.037 s\nQuality\nexact\nsynthetic_plugin",
+  "stage": {
+    "clientWidth": 392,
+    "scrollLeft": 144.8000030517578,
+    "scrollWidth": 739
+  },
+  "viewport": {
+    "height": 546,
+    "width": 474
+  }
+}

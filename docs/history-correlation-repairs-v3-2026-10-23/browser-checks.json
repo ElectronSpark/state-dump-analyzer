@@ -1,0 +1,209 @@
+[
+  {
+    "id": "01",
+    "name": "HC3-2 initial VPN context",
+    "observation": "Set any-router scenario and MPLS L3VPN.",
+    "time": "2026-10-24T01:03:42.532Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=focused",
+    "snapshot": "browser-01.txt"
+  },
+  {
+    "id": "02",
+    "name": "HC3-2 VRF then family",
+    "observation": [
+      {
+        "id": "mn-route-vrf",
+        "value": "default"
+      },
+      {
+        "id": "mn-route-family",
+        "value": "ipv4_unicast"
+      },
+      {
+        "id": "mn-route-type",
+        "value": "ipv4_unicast"
+      }
+    ],
+    "time": "2026-10-24T01:03:47.220Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=default&route_family=ipv4_unicast&route_type=ipv4_unicast&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=focused",
+    "snapshot": "browser-02.txt"
+  },
+  {
+    "id": "03",
+    "name": "HC3-2 family then VRF repeat",
+    "observation": [
+      {
+        "id": "mn-route-vrf",
+        "value": "default"
+      },
+      {
+        "id": "mn-route-family",
+        "value": "ipv4_unicast"
+      },
+      {
+        "id": "mn-route-type",
+        "value": "ipv4_unicast"
+      }
+    ],
+    "time": "2026-10-24T01:03:53.488Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=default&route_family=ipv4_unicast&route_type=ipv4_unicast&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=focused",
+    "snapshot": "browser-03.txt"
+  },
+  {
+    "id": "04",
+    "name": "HC3-2 submitted IPv4 route",
+    "observation": "Both directions reachable; rendered routing context default / ipv4_unicast / ipv4_unicast.",
+    "time": "2026-10-24T01:04:13.522Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=default&route_family=ipv4_unicast&route_type=ipv4_unicast&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=focused&route_path=route-path%3Ainventory%3Ageneric-ipv4_unicast-default-ipv4_unicast%3Anode-a%3Anode-b",
+    "snapshot": "browser-04.txt"
+  },
+  {
+    "id": "05",
+    "name": "HC3-2 VPN recovery",
+    "observation": [
+      {
+        "id": "mn-route-vrf",
+        "value": "blue"
+      },
+      {
+        "id": "mn-route-family",
+        "value": "vpnv4_unicast"
+      },
+      {
+        "id": "mn-route-type",
+        "value": "mpls_l3vpn"
+      }
+    ],
+    "time": "2026-10-24T01:04:14.641Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=focused",
+    "snapshot": "browser-05.txt"
+  },
+  {
+    "id": "06",
+    "name": "HC3-2 VPN trace submission",
+    "observation": "Both directions reachable with blue / vpnv4_unicast / mpls_l3vpn; service context separate from transit.",
+    "time": "2026-10-24T01:04:25.828Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=focused&route_path=route-path%3Ainventory%3Ageneric-mpls_l3vpn-blue-vpnv4_unicast%3Anode-a%3Anode-b",
+    "snapshot": "browser-06.txt"
+  },
+  {
+    "id": "07",
+    "name": "HC3-1 ES0 at +240.010000000",
+    "observation": "Settled focused graph has 3 edges (service0 membership/active_path, VIF); no service375.",
+    "time": "2026-10-24T01:05:30.000Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26relative_seconds%3D0%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_scenario%3Drouter-to-router%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Dblue%26route_family%3Dvpnv4_unicast%26route_type%3Dmpls_l3vpn%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dforward%26route_view%3Dfocused%26route_path%3Droute-path%253Ainventory%253Ageneric-mpls_l3vpn-blue-vpnv4_unicast%253Anode-a%253Anode-b%23fabric#temporal-topology",
+    "snapshot": "browser-07.txt"
+  },
+  {
+    "id": "08",
+    "name": "HC3-1 service375 one ns before attachment",
+    "observation": "Focused ES0 still has 3 relationships; exact range start240.037499999.",
+    "time": "2026-10-24T01:05:38.821Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26relative_seconds%3D0%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_scenario%3Drouter-to-router%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Dblue%26route_family%3Dvpnv4_unicast%26route_type%3Dmpls_l3vpn%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dforward%26route_view%3Dfocused%26route_path%3Droute-path%253Ainventory%253Ageneric-mpls_l3vpn-blue-vpnv4_unicast%253Anode-a%253Anode-b%23fabric#temporal-topology",
+    "snapshot": "browser-08.txt"
+  },
+  {
+    "id": "09",
+    "name": "HC3-1 service375 exact attachment",
+    "observation": "Focused ES0 has5 edges; new service375 membership and active_path appear at240.037500000.",
+    "time": "2026-10-24T01:05:49.874Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26relative_seconds%3D0%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_scenario%3Drouter-to-router%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Dblue%26route_family%3Dvpnv4_unicast%26route_type%3Dmpls_l3vpn%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dforward%26route_view%3Dfocused%26route_path%3Droute-path%253Ainventory%253Ageneric-mpls_l3vpn-blue-vpnv4_unicast%253Anode-a%253Anode-b%23fabric#temporal-topology",
+    "snapshot": "browser-09.txt"
+  },
+  {
+    "id": "10",
+    "name": "HC3-1 exact table/graph agreement",
+    "observation": "At240.037500000 ETG375 is all-active; ES0 has5 edges.",
+    "time": "2026-10-24T01:05:54.958Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26relative_seconds%3D0%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_scenario%3Drouter-to-router%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Dblue%26route_family%3Dvpnv4_unicast%26route_type%3Dmpls_l3vpn%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dforward%26route_view%3Dfocused%26route_path%3Droute-path%253Ainventory%253Ageneric-mpls_l3vpn-blue-vpnv4_unicast%253Anode-a%253Anode-b%23fabric#temporal-topology",
+    "snapshot": "browser-10.txt"
+  },
+  {
+    "id": "11",
+    "name": "HC3-1 rewind removes new relationships",
+    "observation": "ETG375 reverted to single-home; focused ES0 back to3 relationships.",
+    "time": "2026-10-24T01:11:11.027Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26relative_seconds%3D0%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_scenario%3Drouter-to-router%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Dblue%26route_family%3Dvpnv4_unicast%26route_type%3Dmpls_l3vpn%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dforward%26route_view%3Dfocused%26route_path%3Droute-path%253Ainventory%253Ageneric-mpls_l3vpn-blue-vpnv4_unicast%253Anode-a%253Anode-b%23fabric#temporal-topology",
+    "snapshot": "browser-11.txt"
+  },
+  {
+    "id": "12",
+    "name": "HC3-1 ES374 before service749",
+    "observation": "Exact range240.074899999; no ETG749 membership or active path in settled focused graph.",
+    "time": "2026-10-24T01:11:25.898Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26relative_seconds%3D0%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_scenario%3Drouter-to-router%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Dblue%26route_family%3Dvpnv4_unicast%26route_type%3Dmpls_l3vpn%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dforward%26route_view%3Dfocused%26route_path%3Droute-path%253Ainventory%253Ageneric-mpls_l3vpn-blue-vpnv4_unicast%253Anode-a%253Anode-b%23fabric#temporal-topology",
+    "snapshot": "browser-12.txt"
+  },
+  {
+    "id": "13",
+    "name": "HC3-1 ES374 exact service749 attachment",
+    "observation": "ETG749 membership appears at240.074900000; graph now4 relationships.",
+    "time": "2026-10-24T01:11:38.962Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26relative_seconds%3D0%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_scenario%3Drouter-to-router%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Dblue%26route_family%3Dvpnv4_unicast%26route_type%3Dmpls_l3vpn%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dforward%26route_view%3Dfocused%26route_path%3Droute-path%253Ainventory%253Ageneric-mpls_l3vpn-blue-vpnv4_unicast%253Anode-a%253Anode-b%23fabric#temporal-topology",
+    "snapshot": "browser-13.txt"
+  },
+  {
+    "id": "14",
+    "name": "HC3-3 narrow pointer hit",
+    "observation": "474x546: clicking edge label opens has_neighbor from ae00000 to peer00374; hit-test label above cards.",
+    "time": "2026-10-24T01:12:14.787Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26relative_seconds%3D0%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_scenario%3Drouter-to-router%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Dblue%26route_family%3Dvpnv4_unicast%26route_type%3Dmpls_l3vpn%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dforward%26route_view%3Dfocused%26route_path%3Droute-path%253Ainventory%253Ageneric-mpls_l3vpn-blue-vpnv4_unicast%253Anode-a%253Anode-b%23fabric#temporal-topology",
+    "snapshot": "browser-14.txt"
+  },
+  {
+    "id": "15",
+    "name": "HC3-3 narrow keyboard activation",
+    "observation": "Enter opens the same has_neighbor edge and peer00374 endpoint.",
+    "time": "2026-10-24T01:12:30.889Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26relative_seconds%3D0%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_scenario%3Drouter-to-router%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Dblue%26route_family%3Dvpnv4_unicast%26route_type%3Dmpls_l3vpn%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dforward%26route_view%3Dfocused%26route_path%3Droute-path%253Ainventory%253Ageneric-mpls_l3vpn-blue-vpnv4_unicast%253Anode-a%253Anode-b%23fabric#temporal-topology",
+    "snapshot": "browser-15.txt"
+  },
+  {
+    "id": "16",
+    "name": "HC3-3 pointer after horizontal scroll",
+    "observation": "Graph scrollLeft moved144.8→347.2; repeated pointer still opens peer00374 relationship.",
+    "time": "2026-10-24T01:12:36.481Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26relative_seconds%3D0%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_scenario%3Drouter-to-router%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Dblue%26route_family%3Dvpnv4_unicast%26route_type%3Dmpls_l3vpn%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dforward%26route_view%3Dfocused%26route_path%3Droute-path%253Ainventory%253Ageneric-mpls_l3vpn-blue-vpnv4_unicast%253Anode-a%253Anode-b%23fabric#temporal-topology",
+    "snapshot": "browser-16.txt"
+  },
+  {
+    "id": "17",
+    "name": "HC3-3 full/focused roundtrip",
+    "observation": "Full mode retains natural canvas width; refocused narrow graph pointer opens same peer00374 relationship.",
+    "time": "2026-10-24T01:12:45.863Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26relative_seconds%3D0%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_scenario%3Drouter-to-router%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Dblue%26route_family%3Dvpnv4_unicast%26route_type%3Dmpls_l3vpn%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dforward%26route_view%3Dfocused%26route_path%3Droute-path%253Ainventory%253Ageneric-mpls_l3vpn-blue-vpnv4_unicast%253Anode-a%253Anode-b%23fabric#temporal-topology",
+    "snapshot": "browser-17.txt"
+  },
+  {
+    "id": "18",
+    "name": "HC3-3 collapse/reopen repetition",
+    "observation": "After settled full/focused switch and collapse/reopen, pointer opens peer00374 relationship.",
+    "time": "2026-10-24T01:13:10.708Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26relative_seconds%3D0%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_scenario%3Drouter-to-router%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Dblue%26route_family%3Dvpnv4_unicast%26route_type%3Dmpls_l3vpn%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dforward%26route_view%3Dfocused%26route_path%3Droute-path%253Ainventory%253Ageneric-mpls_l3vpn-blue-vpnv4_unicast%253Anode-a%253Anode-b%23fabric#temporal-topology",
+    "snapshot": "browser-18.txt"
+  },
+  {
+    "id": "19",
+    "name": "HC3-3 default viewport repeat",
+    "observation": "1280x720 after viewport reset: pointer still opens correct peer00374 relationship; canvas fits1174px stage.",
+    "time": "2026-10-24T01:13:16.682Z",
+    "url": "http://127.0.0.1:8883/node?topology_id=demo.fabric.multi-node&node_id=node-a&revision_id=demo%2Fnode-a%2Frevision-0001&plugin_set_id=node-a.generated.v1&context_id=tctx1-6dbe8fa803db60c4b94981fc&plugin_id=demo.example-router&projection_id=demo.generated-topology&status_perspective_id=demo.generated-observed&basis_kind=relative_to_watermark&basis_offset_ns=0&member_id=member%3Anode-a&clock_domain=node-a%3Agenerated-realtime&clock_policy=best_effort&return_to=%2F%3Ftopology_profile_id%3Dfabric-underlay%26status_perspective_id%3Dobserved-status%26topology_layers%3Dsubnets%252Cinterfaces%26topology_view%3Dunderlay%26basis_kind%3Drelative_to_watermark%26clock_policy%3Dbest_effort%26relative_seconds%3D0%26members%3Dmember%253Anode-a%252Cmember%253Anode-b%252Cmember%253Anode-c%252Cmember%253Anode-d%252Cmember%253Anode-e%252Cmember%253Atransit-p-1%252Cmember%253Atransit-p-2%252Cmember%253Ace-west%252Cmember%253Ace-east%252Cmember%253Aedge-c%26focus_member%3Dmember%253Anode-a%26focus_node%3Dnode-a%26context_id%3Dtctx1-6dbe8fa803db60c4b94981fc%26route_scenario%3Drouter-to-router%26route_start%3Dstart%253Anode-a%26route_source%3Dsource%253Anode-a%26route_destination%3Ddestination%253Anode-b%26route_vrf%3Dblue%26route_family%3Dvpnv4_unicast%26route_type%3Dmpls_l3vpn%26route_policy%3Dbest_effort%26route_max_hops%3D64%26route_max_recursion%3D16%26route_steering%3Dobserved%26route_direction%3Dbidirectional%26route_focus_direction%3Dforward%26route_view%3Dfocused%26route_path%3Droute-path%253Ainventory%253Ageneric-mpls_l3vpn-blue-vpnv4_unicast%253Anode-a%253Anode-b%23fabric#temporal-topology",
+    "snapshot": "browser-19.txt"
+  },
+  {
+    "id": "20",
+    "name": "HC3-2 cross-component return",
+    "observation": "Back to topology restores blue/vpnv4/MPLS L3VPN context after historical node moves.",
+    "time": "2026-10-24T01:13:56.014Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=blue&route_family=vpnv4_unicast&route_type=mpls_l3vpn&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=focused#fabric",
+    "snapshot": "browser-20.txt"
+  },
+  {
+    "id": "21",
+    "name": "HC3-2 repeated submit after node roundtrip",
+    "observation": "Final IPv4 default trace resolves both directions after historical node/correlation operations.",
+    "time": "2026-10-24T01:14:23.507Z",
+    "url": "http://127.0.0.1:8883/?topology_profile_id=fabric-underlay&status_perspective_id=observed-status&topology_layers=subnets%2Cinterfaces&topology_view=underlay&basis_kind=relative_to_watermark&clock_policy=best_effort&relative_seconds=0&members=member%3Anode-a%2Cmember%3Anode-b%2Cmember%3Anode-c%2Cmember%3Anode-d%2Cmember%3Anode-e%2Cmember%3Atransit-p-1%2Cmember%3Atransit-p-2%2Cmember%3Ace-west%2Cmember%3Ace-east%2Cmember%3Aedge-c&focus_member=member%3Anode-a&focus_node=node-a&context_id=tctx1-6dbe8fa803db60c4b94981fc&route_scenario=router-to-router&route_start=start%3Anode-a&route_source=source%3Anode-a&route_destination=destination%3Anode-b&route_vrf=default&route_family=ipv4_unicast&route_type=ipv4_unicast&route_policy=best_effort&route_max_hops=64&route_max_recursion=16&route_steering=observed&route_direction=bidirectional&route_focus_direction=forward&route_view=focused&route_path=route-path%3Ainventory%3Ageneric-ipv4_unicast-default-ipv4_unicast%3Anode-a%3Anode-b#fabric",
+    "snapshot": "browser-21.txt"
+  }
+]

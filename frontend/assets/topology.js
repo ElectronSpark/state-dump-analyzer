@@ -1374,30 +1374,43 @@ function vrfSupportsRouteContext(vrf, family, routeType) {
     && (!routeType || !types.length || types.includes(routeType));
 }
 
-function resolveCompatibleRouteContext({ routeType, routeFamily, vrf, scenario = null }) {
+function resolveCompatibleRouteContext({ routeType, routeFamily, vrf, scenario = null, editedField = "" }) {
   const capabilities = state.routeCapabilities;
   if (!capabilities) return { routeType: String(routeType || ""), family: null, vrf: null };
   const scenarioType = String(scenario?.route_type ?? "");
   const requestedType = String(routeType || scenarioType || capabilities.default_route_type || "");
-  const resolvedType = advertisedRouteType(requestedType)?.type_id
+  let resolvedType = advertisedRouteType(requestedType)?.type_id
     || advertisedRouteType(scenarioType)?.type_id
     || advertisedRouteType(capabilities.default_route_type)?.type_id
     || capabilities.route_types[0]?.type_id || "";
   const scenarioFamily = advertisedRouteFamily(scenario?.route_family ?? scenario?.address_family);
   const requestedFamily = advertisedRouteFamily(routeFamily);
   const defaultFamily = advertisedRouteFamily(capabilities.default_route_family);
-  const family = [requestedFamily, scenarioFamily, defaultFamily, ...capabilities.route_families]
-    .find((candidate) => candidate && routeFamilySupportsType(candidate, resolvedType)) || null;
   const scenarioVrf = advertisedVrf(scenario?.vrf ?? scenario?.vrf_id);
   const requestedVrf = advertisedVrf(vrf);
   const defaultVrf = advertisedVrf(capabilities.default_vrf);
+  const families = [requestedFamily, scenarioFamily, defaultFamily, ...capabilities.route_families];
+  // The changed control owns this edit; reconcile the other controls against
+  // its advertised compatibility instead of reviving the previous route type.
+  const editedFamily = editedField === "routeFamily" ? requestedFamily : null;
+  const editedVrf = editedField === "vrf" ? requestedVrf : null;
+  if (editedFamily || editedVrf) {
+    const compatibleType = [advertisedRouteType(resolvedType), ...capabilities.route_types].find((type) =>
+      type && families.some((family) => family && (!editedFamily || family === editedFamily)
+        && routeFamilySupportsType(family, type.type_id)
+        && (!editedVrf || vrfSupportsRouteContext(editedVrf, family, type.type_id)))
+    );
+    if (compatibleType) resolvedType = compatibleType.type_id;
+  }
+  const family = families.find((candidate) => candidate && routeFamilySupportsType(candidate, resolvedType)
+    && (!editedVrf || vrfSupportsRouteContext(editedVrf, candidate, resolvedType))) || null;
   const resolvedVrf = [requestedVrf, scenarioVrf, defaultVrf, ...capabilities.vrfs]
     .find((candidate) => vrfSupportsRouteContext(candidate, family, resolvedType)) || null;
   return { routeType: resolvedType, family, vrf: resolvedVrf };
 }
 
-function applyCompatibleRouteContext({ routeType, routeFamily, vrf, scenario = selectedRouteScenario() }) {
-  const context = resolveCompatibleRouteContext({ routeType, routeFamily, vrf, scenario });
+function applyCompatibleRouteContext({ routeType, routeFamily, vrf, scenario = selectedRouteScenario(), editedField = "" }) {
+  const context = resolveCompatibleRouteContext({ routeType, routeFamily, vrf, scenario, editedField });
   if (context.routeType) ensureRouteSelectValue(byId("mn-route-type"), context.routeType);
   if (context.family) ensureRouteSelectValue(byId("mn-route-family"), context.family.route_family);
   if (context.vrf) byId("mn-route-vrf").value = context.vrf.vrf;
@@ -10131,6 +10144,7 @@ function bindControls() {
         routeType: byId("mn-route-type").value,
         routeFamily: byId("mn-route-family").value,
         vrf: byId("mn-route-vrf").value,
+        editedField: { "mn-route-type": "routeType", "mn-route-family": "routeFamily", "mn-route-vrf": "vrf" }[id],
       });
       byId("mn-route-error").textContent = "";
       clearFocusedRouteEntry();

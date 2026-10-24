@@ -549,6 +549,47 @@ function installControlBlock(marker, endMarker, deps) {
   new Function(...Object.keys(deps), source.slice(start, end))(...Object.values(deps));
 }
 
+test("HC3-2: explicit context edits reconcile dependent controls regardless of edit order", () => {
+  const start = '["mn-route-vrf", "mn-route-family", "mn-route-type"].forEach';
+  for (const order of [["vrf", "family"], ["family", "vrf"], ["type", "vrf"]]) {
+    const h = controls();
+    h.state.routeCapabilities.route_families = [
+      { route_family: "ipv4/unicast", supported_route_types: ["ipv4"] },
+      { route_family: "vpnv4", supported_route_types: ["mpls_l3vpn"] },
+    ];
+    h.state.routeCapabilities.route_types = [{ type_id: "ipv4" }, { type_id: "mpls_l3vpn" }];
+    h.state.routeCapabilities.vrfs = [
+      { vrf_id: "default", vrf: "default", route_families: ["ipv4/unicast"], supported_route_types: ["ipv4"] },
+      { vrf_id: "blue", vrf: "blue", route_families: ["vpnv4"], supported_route_types: ["mpls_l3vpn"] },
+    ];
+    h.byId("mn-route-type").value = "mpls_l3vpn";
+    h.byId("mn-route-family").value = "vpnv4";
+    h.byId("mn-route-vrf").value = "blue";
+    installControlBlock(start, 'byId("mn-route-policy").addEventListener', {
+      ...h.overrides, ...h.api, clearFocusedRouteEntry() {},
+    });
+    for (const field of order) {
+      h.byId(`mn-route-${field}`).value = { type: "ipv4", family: "ipv4/unicast", vrf: "default" }[field];
+      h.byId(`mn-route-${field}`).fire("change");
+      assert.equal(h.byId("mn-route-type").value, "ipv4", `${field} edit must reconcile type`);
+      assert.equal(h.byId("mn-route-family").value, "ipv4/unicast");
+      assert.equal(h.byId("mn-route-vrf").value, "default");
+    }
+    // The same handler must also recover the VPN context in the other direction.
+    h.byId("mn-route-family").value = "vpnv4";
+    h.byId("mn-route-family").fire("change");
+    assert.equal(h.byId("mn-route-type").value, "mpls_l3vpn");
+    assert.equal(h.byId("mn-route-vrf").value, "blue");
+    h.api.setRouteEndpointInput("source", "source:a");
+    h.api.setRouteEndpointInput("destination", "destination:b");
+    h.byId("mn-route-start").value = "start:a";
+    const request = h.api.buildRouteTraceRequest();
+    assert.equal(request.route_type, "mpls_l3vpn");
+    assert.equal(request.route_family, "vpnv4");
+    assert.equal(request.vrf, "blue");
+  }
+});
+
 test('history-restored route controls reconcile with applied filters after pageshow and ordinary renders', () => {
   const { byId, document } = dom();
   const row = (prefix) => ({ node_id: 'a', prefix, next_hops: [], forwarding_actions: [], protocol: 'static' });

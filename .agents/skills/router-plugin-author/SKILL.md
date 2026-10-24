@@ -199,6 +199,8 @@ For generic frontend repairs, use the map's
 [state and recovery checks](../../../docs/plugin-api-validation.md#frontend-state-and-recovery).
 Keep user choices separate from newly discovered data, and validate recovery
 through the real form or event handler as well as controller unit tests.
+When reconciling dependent controls, give the explicitly edited field priority;
+scenario defaults must not silently undo a compatible family or VRF edit.
 Use stable control and tree-instance identities when replacing UI subtrees;
 capture navigation or review ownership before the first await, including
 selection resolution, and recheck it before deferred focus or dialog opening.
@@ -241,6 +243,10 @@ Node-local forwarding timestamps belong to the executing node's clock even when
 their evidence references another device. Convert cross-node observations through
 the declared clock mapping; preserve the source evidence's independent validity.
 Regenerate persisted demo projections when their producer changes.
+Persisted relationship starts must match each attachment event, including later
+services sharing existing endpoints; endpoint presence cannot repair early edges.
+In narrow correlation layouts, reserve space for actual card and label widths
+so visible labels retain their own pointer targets as well as keyboard activation.
 
 ## Verify and finish
 

@@ -215,6 +215,8 @@ Compare
 exact counts with paged detail, and retained-result labels with the applied
 request after invalid input. After actual browser Back, compare restored field
 values with settled rows; consistent reset and retained filtering are both valid.
+Edit dependent route controls in different orders and inspect the submitted
+context; the explicit family or VRF edit must not silently restore an old type.
 For historical route checks, compare row/decision validity and the actual traversed
 link with the applied per-node time and clock bounds. Test direct tracing as well
 as table-seeded tracing; hiding an invalid table row must not leave a trace bypass.
@@ -227,8 +229,12 @@ edges from viewport-wide history and failed intent from applied state. Wait for
 both graph and table to settle; one completed panel does not establish the other.
 An omitted focus in a bounded or representative graph is not evidence of absent
 relationships. Compare broad/focused scope with active and inactive roots.
+For shared endpoints, compare persisted edge validity with each attachment event
+at before/exact/backward boundaries; existing endpoints can conceal early edges.
 For layered graphs, compare SVG and HTML coordinates and marker IDs in the live
 document; correct semantic output does not establish correct visible geometry.
+At narrow widths, hit-test relationship labels against resource cards and repeat
+pointer/keyboard activation after horizontal scrolling and focused/full switching.
 Cross-check node, edge, label and resolution-step highlights in both directions;
 cross-node evidence ownership must not replace the executing hop's identity.
 Check that path-scoped service context does not visually assert membership for
