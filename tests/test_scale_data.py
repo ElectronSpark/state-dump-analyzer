@@ -720,6 +720,20 @@ class ScaleProjectionCapabilityTests(unittest.TestCase):
 
 
 class PackedFixturePluginResourceRecordTests(unittest.TestCase):
+    def test_interface_labels_preserve_slashes_and_subinterface_names(self) -> None:
+        for name in ("Ethernet4/1", "Ethernet1/1.310"):
+            for prefix in ("", "PE-A/"):
+                resource_id = f"{prefix}hardware-driver/VIRTUAL_INTERFACE/interface:{name}"
+                values = ("VIRTUAL_INTERFACE", resource_id, "hardware-driver", *("",) * 15)
+                record = _resource_record(values)
+                self.assertEqual(record["label"], name)
+                self.assertEqual(record["resource_id"], resource_id)
+
+    def test_interface_label_prefers_declared_name(self) -> None:
+        values = ("VIRTUAL_INTERFACE", "opaque-interface", "hardware-driver", *("",) * 15)
+        record = _resource_record(values, key_json='{"interface_name":"Ethernet4/1"}')
+        self.assertEqual(record["label"], "Ethernet4/1")
+
     def setUp(self) -> None:
         self.legacy_values = (
             "PLUGIN_NEIGHBOR",

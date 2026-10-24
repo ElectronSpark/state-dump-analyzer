@@ -34,7 +34,7 @@
           <a href="#route">Route</a>
           <a href="#plugin-dashboards">Dashboards</a>
         </nav>
-        <button class="review-button" id="open-review" type="button">
+        <button class="review-button" id="open-review" type="button" disabled>
           Review gaps <span id="gap-count">9</span>
         </button>
       </header>
@@ -62,7 +62,7 @@
         </div>
       </section>
 
-      <main>
+      <main inert aria-busy="true">
         <section class="hero section-wrap" id="overview">
           <div class="hero-copy">
             <p class="eyebrow">REVISION <span id="revision-id">loading…</span></p>
@@ -663,7 +663,7 @@
 
       <footer>
         <span>Router State Lab · single-node analysis workspace</span>
-        <button id="open-review-footer" type="button">What should we build next?</button>
+        <button id="open-review-footer" type="button" disabled>What should we build next?</button>
       </footer>
     </div>
 

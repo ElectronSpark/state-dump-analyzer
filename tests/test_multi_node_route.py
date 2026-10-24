@@ -1725,6 +1725,28 @@ class MultiNodeRouteTests(unittest.TestCase):
                 )
                 self.assertEqual(response.status_code, 200, response.text)
 
+    def test_route_table_egress_uses_declared_labels_or_opaque_identity(self) -> None:
+        payload = query_all_route_table_rows(self.client)
+        # Authored interfaces in router-state-lab-default.scenario.json. Keep
+        # expectations explicit: neither generic snapshots nor ID splitting
+        # establish the producer's declared display name.
+        expected_names = {
+            "node-a/data-bridge-layer/VIRTUAL_INTERFACE/interface:Ethernet1/1.310": "Ethernet1/1.310",
+            "transit-p-2/data-bridge-layer/VIRTUAL_INTERFACE/interface:Ethernet4/1": "Ethernet4/1",
+            "edge-c/data-bridge-layer/VIRTUAL_INTERFACE/interface:Ethernet1/1": "Ethernet1/1",
+            # The generated topology projection declares interfaces and local
+            # scope records, but no resource for this blue routing handle.
+            "node-a/control-plane/IP_ROUTING/blue": "node-a/control-plane/IP_ROUTING/blue",
+        }
+        observed = set()
+        for row in payload["items"]:
+            egress = row["egress_interface"]
+            identifier = egress["resource_id"]
+            if identifier in expected_names:
+                self.assertEqual(egress["name"], expected_names[identifier])
+                observed.add(identifier)
+        self.assertEqual(observed, set(expected_names))
+
     def test_route_table_query_covers_every_node_with_generic_and_plugin_fields(self) -> None:
         payload = query_all_route_table_rows(self.client)
         capabilities = self.client.get(

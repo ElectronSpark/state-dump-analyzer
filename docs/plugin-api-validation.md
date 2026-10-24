@@ -472,6 +472,13 @@ when refreshed data rediscovers existing options; distinguish discovery defaults
 from intentional reveal actions. Check the settled response after zoom or pan,
 not only the immediate render before asynchronous data arrives.
 
+Exercise cold node startup before bootstrap and initial timeline reads finish.
+An enabled form with an unbound submit handler can perform native navigation;
+an empty GET submission can remove the contextual node/time/return query.
+Keep that workspace unavailable until handlers bind, then release it without
+waiting for optional discovery or dashboards. Check pointer and keyboard submits,
+ignored-action affordances, and the usable retry path after startup failure.
+
 Lane presets and explicit custom choices are different state. A selection or
 reveal must preserve the current preset's intent, rather than revive an old
 custom set; every layout must honor applicable layer and resource visibility.
@@ -495,6 +502,16 @@ stable identity and its containing tree/module/device instance. An event UID
 plus resource ID is not unique when the same resource appears in several tree
 branches. Restore focus without stealing it from a newer user action, and keep
 popups anchored to the same instance.
+For geometry-only graph resizing, update the existing targets where possible.
+Test width and height independently with an edge or node focused and pinned;
+preserve the live anchor and external field focus while retaining clipping rules.
+
+Display labels and opaque resource identities are different contracts. Compare
+slash-containing interface names in single-node tables/graphs and fabric route
+egresses. A declared name must survive normalization; a generic fallback should
+retain the opaque ID rather than take its final path component. Check each
+producer separately, including a missing-label fallback, instead of repairing
+the frontend with device-specific ID parsing.
 
 Passive pinned-inspector restoration must not repeat activation's focus transfer.
 Type multiple characters into a graph filter with a pin open, then repeat without

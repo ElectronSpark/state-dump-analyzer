@@ -150,6 +150,7 @@ class MultiNodeRouteService:
         self._generated_revision_by_node: dict[str, str] = {}
         self._generated_provider_by_node: dict[str, dict[str, Any]] = {}
         self._generated_resource_owner_by_id: dict[str, str] = {}
+        self._generated_resource_label_by_id: dict[str, str] = {}
         for node_id, raw_projection in projections.projections_by_node.items():
             node_descriptor = topology.node_contract(node_id)
             if node_descriptor is None:
@@ -224,6 +225,14 @@ class MultiNodeRouteService:
                 topology_projection.get("resources", [])
                 if isinstance(topology_projection, dict)
                 else []
+            )
+            # Keep declared display names from this revision; resource handles
+            # are opaque and their slash-delimited suffixes are not labels.
+            self._generated_resource_label_by_id.update(
+                (str(item["resource_id"]), item["label"])
+                for item in topology_resources
+                if isinstance(item, dict) and item.get("resource_id")
+                and isinstance(item.get("label"), str) and item["label"]
             )
             # Ownership comes from the generated resource inventory.  Route
             # evidence is intentionally allowed to reference resources owned
@@ -4376,7 +4385,9 @@ class MultiNodeRouteService:
             "forwarding_actions": forwarding_actions,
             "egress_interface": {
                 "resource_id": egress_resource_id,
-                "name": egress_resource_id.rsplit("/", 1)[-1],
+                "name": self._generated_resource_label_by_id.get(
+                    egress_resource_id, egress_resource_id,
+                ),
                 "node_id": node_id,
             },
             "metric": int(row.get("metric", 0)),

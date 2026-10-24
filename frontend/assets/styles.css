@@ -228,6 +228,12 @@ a {
   display: none;
 }
 
+main[inert],
+.review-button:disabled,
+#open-review-footer:disabled {
+  opacity: 0.5;
+}
+
 .analysis-load-progress[data-state="failed"] {
   border-color: rgba(255, 104, 121, 0.52);
   background: rgba(45, 18, 27, 0.96);

@@ -46,6 +46,8 @@ before changing plug-in semantics.
 - Keep typed `ResourceKey` identity, stable event/source identities, retained
   evidence, and unknown/absent time semantics. Follow the teaching golden tests
   for the output types; do not invent timestamps or turn unknown state into absence.
+  Prefer declared display labels; opaque resource IDs are not filesystem paths.
+  Keep separators inside local interface names when applying plug-in-owned parsing.
 - Core owns persistence, HTTP routes, queries, scheduling, and generic rendering.
   Device meaning belongs in the plug-in. Ordinary ingestion stores events but
   does not schedule `apply`, `revert`, or `correlate`. Durable ingestion schedules
@@ -199,8 +201,11 @@ For generic frontend repairs, use the map's
 [state and recovery checks](../../../docs/plugin-api-validation.md#frontend-state-and-recovery).
 Keep user choices separate from newly discovered data, and validate recovery
 through the real form or event handler as well as controller unit tests.
+Keep unbound workspace controls unavailable during asynchronous startup, including
+native form submission; enable them after binding and keep failure retry usable.
 When reconciling dependent controls, give the explicitly edited field priority;
 scenario defaults must not silently undo a compatible family or VRF edit.
+For geometry-only changes, update existing graph targets instead of replacing them.
 Use stable control and tree-instance identities when replacing UI subtrees;
 capture navigation or review ownership before the first await, including
 selection resolution, and recheck it before deferred focus or dialog opening.

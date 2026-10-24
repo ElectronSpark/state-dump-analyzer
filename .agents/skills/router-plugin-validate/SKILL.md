@@ -161,8 +161,14 @@ For frontend state repairs, follow the map's
 [state and recovery checks](../../../docs/plugin-api-validation.md#frontend-state-and-recovery).
 Wait for asynchronous refreshes before judging retained choices, and exercise
 the next successful action after a failed operation through the actual UI.
+Test cold startup before bootstrap and timeline finish: native form submission
+must not navigate away or strip context, and unavailable controls must not appear
+actionable. Verify readiness and failure retry without waiting for optional panels.
 Also activate controls during layout transitions, then check the settled result:
 resize-only redraws must preserve valid popup anchors and keyboard focus.
+Include width-only and height-only changes with a pin open and with focus outside
+the graph. Compare declared interface names and opaque IDs across resource tables,
+correlations, and route egresses; slash-containing names must not become basenames.
 Include duplicate tree instances, uncached keyboard targets, and invalid input
 while an older read is pending. Verify selected presets, focus, popup anchors,
 and dependent guidance after the settled render. Use production-normalized

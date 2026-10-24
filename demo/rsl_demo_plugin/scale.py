@@ -90,6 +90,9 @@ def scale_condition_class(status: Any) -> str:
 def scale_resource_label(resource_id: str) -> str:
     """Return the fixture plug-in's compact label for an opaque core handle."""
 
+    _, interface_marker, interface_name = resource_id.partition("/VIRTUAL_INTERFACE/")
+    if interface_marker:
+        return interface_name.removeprefix("interface:") or resource_id
     parts = resource_id.split("/")
     if len(parts) <= 2:
         return resource_id
@@ -188,11 +191,16 @@ def scale_resource_record(
             if value:
                 key[field] = value
     key.update(_resource_json_object(key_json, "KEY_JSON"))
+    interface_name = key.get("interface_name") if kind == "VIRTUAL_INTERFACE" else None
     return {
         "resource_id": resource_id,
         "kind": kind,
         "layer": layer,
-        "label": scale_resource_label(resource_id),
+        "label": (
+            interface_name
+            if isinstance(interface_name, str) and interface_name
+            else scale_resource_label(resource_id)
+        ),
         "key": key,
         "state": state,
         "status": status,

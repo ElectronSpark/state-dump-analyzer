@@ -12,14 +12,15 @@ function extract(name) {
 }
 function deferred() { let resolve; let reject; const promise = new Promise((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; }
 const settle = () => new Promise((resolve) => setImmediate(resolve));
-function harness({ resource = false, scale = false, incident = false, navigation = false } = {}) {
-  const timeline = deferred(); const preview = deferred(); const topology = deferred();
+function harness({ resource = false, scale = false, incident = false, navigation = false, pendingBootstrap = false } = {}) {
+  const bootstrap = deferred(); const timeline = deferred(); const preview = deferred(); const topology = deferred();
   const dataset = { resources: resource ? [{ resource_id: 'r1', kind: 'port' }] : [], events: incident ? [{ event_uid: 'e1', resource_id: 'r1' }] : [] };
   const state = { resourceById: new Map(), eventByUid: new Map(), layerMeta: new Map(), lanes: [], durableReview: {}, failureIncidentPreview: [], selectedResourceKind: 'old', correlatedResourceIds: new Set(), laneByResource: new Map(), explicitLaneIds: new Set() };
   const effects = { calls: [], renders: 0, selections: [] };
+  const main = { inert: true, busy: true, innerHTML: '', removeAttribute(name) { if (name === 'aria-busy') this.busy = false; } };
   const deps = {
     state, navigationContext: navigation ? { timeNs: '5' } : {},
-    analysisRuntimeApi: async () => dataset, bootstrapDatasetPath: () => '/v1/revisions/rev1/analysis',
+    analysisRuntimeApi: async () => pendingBootstrap ? bootstrap.promise : dataset, bootstrapDatasetPath: () => '/v1/revisions/rev1/analysis',
     workspaceMetadata: () => ({ timeline_start_ns: '0', timeline_end_ns: '10', capture_ns: '10', initial_focus_resource_id: resource ? 'r1' : '' }),
     registerResource: (item) => state.resourceById.set(item.resource_id, item),
     compareLogEntries: () => 0, sourceRecordUid: (item) => item.uid,
@@ -33,13 +34,36 @@ function harness({ resource = false, scale = false, incident = false, navigation
     canonicalResourceId: (id) => id,
     selectResource: (id, options) => { effects.selections.push({ id, options }); state.selectedResourceId = id; },
     selectEvent: (id, move, resourceId, options) => { effects.selections.push({ id, move, options }); state.selectedEventUid = id; },
-    document: { querySelector: () => ({ innerHTML: '' }) }, escapeHtml: String,
+    document: { querySelector: () => main }, escapeHtml: String,
   };
   for (const name of ['initializeDurableReviewSetup', 'initializeResourceTableView', 'initializeSourceRecordGroups', 'discoverPresentation', 'renderTopologyNavigationBanner', 'initializeDashboardLayout', 'markDashboardsPending', 'renderIncidentSummary', 'renderLayerToggles', 'renderTimeline', 'renderRangeSummary', 'renderFindings', 'renderTopologyResults', 'renderInventory', 'configureRouteControls', 'renderReview', 'renderEventLayerFilter', 'syncEventLogIncludeControls', 'renderEventTable', 'renderPluginDashboards', 'bindControls']) deps[name] = () => {};
   for (const name of ['requestGraph', 'requestResources', 'requestDashboards', 'requestTopology', 'resolveRoute']) deps[name] = async () => { effects.calls.push(name); };
+  deps.bindControls = () => {
+    assert.equal(main.inert, true, 'controls become usable only after handlers bind');
+    effects.bound = true;
+  };
   const initialize = new Function(...Object.keys(deps), `${extract('initialize')}\nreturn initialize;`)(...Object.values(deps));
-  return { initialize, state, effects, timeline, preview, topology };
+  return { initialize, state, effects, bootstrap, dataset, main, timeline, preview, topology };
 }
+
+test('workspace is inert throughout bootstrap and timeline loading, then usable before optional discovery finishes', async () => {
+  const html = readFileSync(new URL('../pages/node.html', import.meta.url), 'utf8');
+  assert.match(html, /<main\b[^>]*\binert\b[^>]*aria-busy="true"/);
+  for (const id of ['open-review', 'open-review-footer']) {
+    assert.match(html, new RegExp(`<button\\b[^>]*id="${id}"[^>]*\\bdisabled\\b`));
+  }
+  const h = harness({ pendingBootstrap: true });
+  const pending = h.initialize(); await settle();
+  assert.equal(h.main.inert, true);
+  assert.equal(h.effects.bound, undefined);
+  h.bootstrap.resolve(h.dataset); await settle();
+  assert.equal(h.main.inert, true);
+  assert.equal(h.effects.bound, undefined);
+  h.timeline.resolve(); await pending;
+  assert.equal(h.effects.bound, true);
+  assert.equal(h.main.inert, false);
+  assert.equal(h.main.busy, false);
+});
 test('timeline starts alongside optional discovery and first render does not wait for either optional response', async () => {
   const h = harness({ resource: true });
   const pending = h.initialize(); await settle();
@@ -141,8 +165,8 @@ test('deferred cursor selection synchronizes follow-cursor topology input withou
   assert.equal(effects.temporal, 1);
 });
 
-test('failed node startup offers manual retry with escaped error text', async () => {
-  const main = { innerHTML: '' };
+test('failed node startup offers usable manual retry with escaped error text', async () => {
+  const main = { inert: true, innerHTML: '', removeAttribute() {} };
   let retry;
   let reloads = 0;
   const deps = {
@@ -158,6 +182,7 @@ test('failed node startup offers manual retry with escaped error text', async ()
   assert.match(main.innerHTML, /&lt;load failed&gt;/);
   assert.match(main.innerHTML, /Retry loading/);
   assert.equal(reloads, 0);
+  assert.equal(main.inert, false);
   retry();
   assert.equal(reloads, 1);
 });

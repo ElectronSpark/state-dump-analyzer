@@ -7783,7 +7783,45 @@ function bindGraphStageInspectionClear() {
   });
 }
 
-function renderGraph() {
+function layoutGraphCanvas(stage, graph, { positions, height, mode }) {
+  const canvas = stage.querySelector(".graph-canvas");
+  const edgeLayer = stage.querySelector(".graph-edge-layer");
+  // Measure SVG text with one user unit per CSS pixel, then keep that scale
+  // after widening the canvas. Card offsets use CSS pixels too.
+  if (edgeLayer) edgeLayer.setAttribute("viewBox", "0 0 " + Math.max(1, canvas.clientWidth) + " " + height);
+  if (mode === "focus") {
+    const nodeWidth = Math.max(0, ...[...canvas.querySelectorAll(".graph-node")].map((node) => node.offsetWidth));
+    const labelWidth = Math.max(0, ...[...canvas.querySelectorAll(".graph-edge-label")].map((label) => label.getComputedTextLength()));
+    canvas.style.minWidth = focusedGraphCanvasWidth(nodeWidth, labelWidth) + "px";
+  }
+  const stageWidth = Math.max(1, canvas.clientWidth);
+  if (edgeLayer) edgeLayer.setAttribute("viewBox", "0 0 " + stageWidth + " " + height);
+  const edgePaths = [...stage.querySelectorAll(".graph-edge")];
+  const edgeLabels = [...stage.querySelectorAll(".graph-edge-label")];
+  graph.edges.forEach((edge, index) => {
+    const geometry = graphEdgeGeometry(edge, positions, height, stageWidth, index);
+    const path = edgePaths[index];
+    const label = edgeLabels[index];
+    if (!geometry || !path || !label) return;
+    path.setAttribute("d", geometry.path);
+    path.dataset.graphEdgeId = String(edge.id);
+    label.setAttribute("x", String(geometry.labelX));
+    label.setAttribute("y", String(geometry.labelY));
+    label.dataset.graphEdgeId = String(edge.id);
+  });
+  return { edgePaths, edgeLabels };
+}
+
+function renderGraph({ resizeOnly = false } = {}) {
+  const stage = byId("graph-stage");
+  if (resizeOnly) {
+    // Layout changes do not replace the focused target or its popup anchor.
+    if (stage.clientWidth && stage.querySelector(".graph-canvas")) {
+      const graph = boundedCorrelationGraph(scopedGraph(normalizedGraph()));
+      layoutGraphCanvas(stage, graph, graphLayout(graph));
+    }
+    return;
+  }
   closeCorrelationHover();
   const fullGraph = normalizedGraph();
   const graphTimeNs = graphDisplayTimeNs(fullGraph);
@@ -7792,7 +7830,6 @@ function renderGraph() {
   updateCorrelationState(fullGraph);
   const scoped = scopedGraph(fullGraph);
   const graph = boundedCorrelationGraph(scoped);
-  const stage = byId("graph-stage");
   if (!graph.nodes.length) {
     state.graphPinnedInspection = null;
     closeCorrelationHover();
@@ -7833,31 +7870,7 @@ function renderGraph() {
   }).join("");
   stage.innerHTML = '<div class="graph-canvas" style="height:' + height + 'px">'
     + graphColumnHeadingsHtml(layout) + svg + nodeHtml + '</div>';
-  const canvas = stage.querySelector(".graph-canvas");
-  const edgeLayer = stage.querySelector(".graph-edge-layer");
-  // Measure SVG text with one user unit per CSS pixel, then keep that scale
-  // after widening the canvas. Card offsets use CSS pixels too.
-  if (edgeLayer) edgeLayer.setAttribute("viewBox", "0 0 " + Math.max(1, canvas.clientWidth) + " " + height);
-  if (layout.mode === "focus") {
-    const nodeWidth = Math.max(0, ...[...canvas.querySelectorAll(".graph-node")].map((node) => node.offsetWidth));
-    const labelWidth = Math.max(0, ...[...canvas.querySelectorAll(".graph-edge-label")].map((label) => label.getComputedTextLength()));
-    canvas.style.minWidth = focusedGraphCanvasWidth(nodeWidth, labelWidth) + "px";
-  }
-  const stageWidth = Math.max(1, canvas.clientWidth);
-  if (edgeLayer) edgeLayer.setAttribute("viewBox", "0 0 " + stageWidth + " " + height);
-  const edgePaths = [...stage.querySelectorAll(".graph-edge")];
-  const edgeLabels = [...stage.querySelectorAll(".graph-edge-label")];
-  graph.edges.forEach((edge, index) => {
-    const geometry = graphEdgeGeometry(edge, positions, height, stageWidth, index);
-    const path = edgePaths[index];
-    const label = edgeLabels[index];
-    if (!geometry || !path || !label) return;
-    path.setAttribute("d", geometry.path);
-    path.dataset.graphEdgeId = String(edge.id);
-    label.setAttribute("x", String(geometry.labelX));
-    label.setAttribute("y", String(geometry.labelY));
-    label.dataset.graphEdgeId = String(edge.id);
-  });
+  const { edgePaths, edgeLabels } = layoutGraphCanvas(stage, graph, layout);
   if (layout.mode === "full" && state.selectedResourceId) {
     const focusEdgeIds = new Set();
     const focusNodeIds = new Set([state.selectedResourceId]);
@@ -12561,14 +12574,14 @@ function bindControls() {
   window.addEventListener("resize", () => {
     closeTimelineContextMenu();
     positionHover();
-    positionCorrelationHover();
     window.clearTimeout(bindControls.timelineResizeTimer);
     bindControls.timelineResizeTimer = window.setTimeout(() => {
       if (state.dataset && timelinePhysicalTrackWidth() !== state.trackWidth) renderTimeline();
     }, 120);
     window.clearTimeout(bindControls.graphResizeTimer);
     bindControls.graphResizeTimer = window.setTimeout(() => {
-      if (state.graph) renderGraph();
+      if (state.graph) renderGraph({ resizeOnly: true });
+      positionCorrelationHover();
     }, 120);
   }, { passive: true });
   byId("lane-picker-toggle").addEventListener("click", () => {
@@ -12700,7 +12713,10 @@ function bindControls() {
   byId("correlation-dialog").addEventListener("close", () => {
     state.durableReview.pendingCorrelationSubjects = [];
   });
-  ["open-review", "open-review-footer"].forEach((id) => byId(id).addEventListener("click", openReview));
+  ["open-review", "open-review-footer"].forEach((id) => {
+    byId(id).addEventListener("click", openReview);
+    byId(id).disabled = false;
+  });
   byId("close-review").addEventListener("click", closeReview); byId("drawer-scrim").addEventListener("click", closeReview);
   ["copy-review", "copy-review-top"].forEach((id) => byId(id).addEventListener("click", copyReview));
   byId("clear-review").addEventListener("click", () => { localStorage.removeItem(REVIEW_STORAGE_KEY); renderReview(); showToast("Review selections cleared."); });
@@ -12798,6 +12814,8 @@ async function initialize() {
     initializeDashboardLayout();
     markDashboardsPending(state.cursorNs);
     fillSummary(); renderIncidentSummary(); renderLayerToggles(); renderTimeline(); renderRangeSummary(); renderFindings(); renderTopologyResults(); renderInventory(); configureRouteControls(); renderReview(); renderEventLayerFilter(); syncEventLogIncludeControls(); renderEventTable(); renderPluginDashboards(); bindControls();
+    document.querySelector("main").inert = false;
+    document.querySelector("main").removeAttribute("aria-busy");
     if (state.durableReview.config) void connectDurableReview({ quiet: true });
     let incident = null;
     for (const candidate of state.eventByUid.values()) {
@@ -12832,6 +12850,8 @@ async function initialize() {
   } catch (error) {
     document.querySelector("main").innerHTML = `<section class="section-wrap"><div class="panel empty-state"><h1>Workspace could not load</h1><p>${escapeHtml(error.message)}</p><button id="node-startup-retry" type="button">Retry loading</button></div></section>`;
     byId("node-startup-retry").addEventListener("click", () => location.reload());
+    document.querySelector("main").inert = false;
+    document.querySelector("main").removeAttribute("aria-busy");
   }
 }
 

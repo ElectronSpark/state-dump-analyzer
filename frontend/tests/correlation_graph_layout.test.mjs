@@ -11,7 +11,8 @@ function functionSource(name) {
 }
 const api = new Function(`${functionSource("focusedGraphCanvasWidth")}
   ${functionSource("graphEdgeGeometry")}
-  return { focusedGraphCanvasWidth, graphEdgeGeometry };`)();
+  ${functionSource("layoutGraphCanvas")}
+  return { focusedGraphCanvasWidth, graphEdgeGeometry, layoutGraphCanvas };`)();
 
 test("focused relationship labels clear both cards at narrow and wide widths", () => {
   // Include the audit viewport, compact and desktop cards, and a long plug-in label.
@@ -50,7 +51,7 @@ for (const mode of ["focus", "full"]) {
     const label = element();
     let measurements = 0;
     label.getComputedTextLength = () => {
-      assert.equal(svg.attrs.viewBox, "0 0 426 540", "measurement starts at one CSS pixel per SVG unit");
+      assert.equal(svg.attrs.viewBox, `0 0 ${canvas.clientWidth} 540`, "measurement starts at one CSS pixel per SVG unit");
       measurements += 1;
       return 67;
     };
@@ -59,8 +60,9 @@ for (const mode of ["focus", "full"]) {
       ".graph-node": buttons, ".graph-edge-label": [label], ".graph-edge": [path],
       "[data-graph-edge-id]": [path, label],
     })[selector] || [];
+    let viewportWidth = 426;
     const canvas = { style: {}, querySelectorAll: query,
-      get clientWidth() { return Math.max(426, parseFloat(this.style.minWidth) || 0); } };
+      get clientWidth() { return Math.max(viewportWidth, parseFloat(this.style.minWidth) || 0); } };
     const stage = { ...element(), clientWidth: 426, querySelectorAll: query,
       querySelector: selector => selector === ".graph-canvas" ? canvas : svg };
     const graph = {
@@ -69,11 +71,13 @@ for (const mode of ["focus", "full"]) {
     };
     const positions = new Map([["selected", { x: 50, y: 50 }], ["peer374", { x: 85, y: 50 }]]);
     const pinned = [];
+    let replacements = 0, closes = 0;
+    Object.defineProperty(stage, 'innerHTML', { set() { replacements++; } });
     const noop = () => {};
     const deps = {
       state: { selectedResourceId: mode === "focus" ? "selected" : null },
       byId: id => id === "graph-stage" ? stage : element(),
-      closeCorrelationHover: noop, normalizedGraph: () => graph, graphDisplayTimeNs: () => 0,
+      closeCorrelationHover: () => { closes++; }, normalizedGraph: () => graph, graphDisplayTimeNs: () => 0,
       renderCorrelationTimeState: noop, syncGraphScopeButton: noop, updateCorrelationState: noop,
       scopedGraph: value => value, boundedCorrelationGraph: value => value,
       graphLayout: () => ({ positions, height: 540, mode, columns: [] }),
@@ -85,7 +89,8 @@ for (const mode of ["focus", "full"]) {
       pinGraphInspection: (_stage, _graph, inspection) => pinned.push(inspection),
       formatOffset: String, renderCorrelationList: noop,
     };
-    new Function(...Object.keys(deps), `${functionSource("renderGraph")}; renderGraph();`)(...Object.values(deps));
+    const renderGraph = new Function(...Object.keys(deps), `${functionSource("renderGraph")}; return renderGraph;`)(...Object.values(deps));
+    renderGraph();
     assert.equal(measurements, mode === "focus" ? 1 : 0);
     assert.equal(svg.attrs.viewBox, `0 0 ${canvas.clientWidth} 540`);
     assert.ok(Math.abs(Number(label.attrs.x) - canvas.clientWidth * 0.675) < 1e-9);
@@ -95,5 +100,28 @@ for (const mode of ["focus", "full"]) {
     label.handlers.keydown(event("Enter"));
     path.handlers.click(event());
     assert.deepEqual(pinned, Array.from({ length: 3 }, () => ({ kind: "edge", id: "edge374" })));
+
+    // Invoke the installed resize listener, including its deferred layout work.
+    const start = source.indexOf('window.addEventListener("resize", () => {', source.indexOf('function bindControls()'));
+    const end = source.indexOf('}, { passive: true });', start) + '}, { passive: true });'.length;
+    let resize;
+    let repositioned = 0;
+    const timers = [];
+    const window = { addEventListener(_type, listener) { resize = listener; }, clearTimeout() {}, setTimeout(callback) { timers.push(callback); } };
+    new Function('window', 'state', 'bindControls', 'closeTimelineContextMenu', 'positionHover', 'positionCorrelationHover', 'timelinePhysicalTrackWidth', 'renderTimeline', 'renderGraph', source.slice(start, end))(
+      window, { graph }, {}, noop, noop, () => { repositioned++; }, noop, noop, renderGraph,
+    );
+    const focusedTarget = label;
+    for (const width of [1280, 426, 426]) {
+      viewportWidth = width;
+      resize();
+      timers.splice(0).forEach(callback => callback());
+      assert.equal(replacements, 1, 'resize must keep the existing SVG and HTML targets');
+      assert.equal(closes, 1, 'resize must not dismiss the existing card');
+      assert.equal(query('.graph-edge-label')[0], focusedTarget);
+      assert.equal(svg.attrs.viewBox, `0 0 ${canvas.clientWidth} 540`);
+      assert.ok(Math.abs(Number(label.attrs.x) - canvas.clientWidth * 0.675) < 1e-9);
+    }
+    assert.equal(repositioned, 3, 'reposition the live popup anchor after each layout');
   });
 }
