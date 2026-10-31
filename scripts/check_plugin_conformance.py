@@ -20,7 +20,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "canonical", "source_record_core", "contract_validation",
         "plugin_identity", "plugin_identity_runtime_imports",
         "contract_validation_boundaries", "resource_property_policy",
-        "property_visibility", "ingestion", "ingestion_execution_boundaries",
+        "property_visibility", "ingestion", "ingestion_execution_boundaries", "ingestion_value_limits",
         "scalable_schemas", "package_preflight", "trace_decoder",
     ),
     "revision": (

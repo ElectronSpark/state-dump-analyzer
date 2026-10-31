@@ -236,6 +236,7 @@ _INGESTION_LIMIT_BOOTSTRAP_FIELDS = (
     "max_evidence_per_output",
     "max_subjects_per_event",
     "max_event_links_per_record",
+    "max_output_value_units",
 )
 
 _ARTIFACT_LIMIT_BOOTSTRAP_FIELDS = (

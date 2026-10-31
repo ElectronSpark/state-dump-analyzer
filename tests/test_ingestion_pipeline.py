@@ -69,6 +69,7 @@ from router_dump_analyzer.ingestion_pipeline import (
     _publisher_execution_plan_support,
     _PublisherExecutionPlanSupport,
     _register_process_bootstrap,
+    _registered_ingestion_limits,
     _registry_from_process_bootstraps,
     _RetentionWorkItem,
     _run_plugin_child,
@@ -104,6 +105,7 @@ from tests.test_ingestion import (
     InvalidProbeDiagnosticPlugin,
     ParseOnlyPlugin,
 )
+from tests.test_ingestion_value_limits import CounterSamplesPlugin
 
 PRIVATE_FAILURE_MARKER = "PRIVATE-INGESTION-FAILURE-7f3e2d"
 
@@ -2723,6 +2725,57 @@ class DurableIngestionPipelineTests(unittest.TestCase):
                 )
             self.assertEqual(completed.state, ImportState.COMPLETED)
             self.assertEqual(len(publisher.revisions), 1)
+
+    def test_output_value_limit_survives_registration_and_process_bootstrap(self) -> None:
+        identities = []
+        for maximum in (4_096, 16_384):
+            with self.subTest(maximum=maximum):
+                limits = IngestionLimits(max_output_value_units=maximum)
+                coordinator = IngestionCoordinator(limits=limits)
+                registered = PluginRegistry().register(
+                    ParseOnlyPlugin(), coordinator=coordinator,
+                )
+                child = _register_process_bootstrap(
+                    PluginRegistry(), registered.process_bootstrap,
+                )
+                self.assertEqual(_registered_ingestion_limits(registered), limits)
+                self.assertEqual(_registered_ingestion_limits(child), limits)
+                self.assertEqual(child.coordinator.limits.max_output_value_units, maximum)
+                self.assertEqual(
+                    child.registered_execution_identity,
+                    registered.registered_execution_identity,
+                )
+                identities.append(registered.registered_execution_identity)
+                coordinator.limits = replace(limits, max_output_value_units=8_192)
+                with self.assertRaisesRegex(
+                    IngestionPipelineError, "limits changed after registration",
+                ):
+                    _registered_ingestion_limits(registered)
+        self.assertNotEqual(*identities)
+
+    def test_publication_rebuild_uses_registered_output_value_limit(self) -> None:
+        plugin = CounterSamplesPlugin()
+        coordinator = IngestionCoordinator(
+            limits=IngestionLimits(max_output_value_units=16_384),
+        )
+        registered = PluginRegistry().register(plugin, coordinator=coordinator)
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "status.jsonl"
+            input_path.write_bytes(_fixture_bytes())
+            result = coordinator.ingest(
+                registered.execution_plugin, input_path, node_hint="node-a",
+            )
+        admitted = _snapshot_coordinator_result(
+            result, registered=registered, expected_node_id="node-a",
+        )
+        payload, _plan = _dataset_with_execution_plan(
+            registered, admitted,
+            execution_plan_authority=PluginExecutionPlanAuthority.PROCESS,
+        )
+        dataset = json.loads(payload)
+        samples = dataset["resources"][0]["state"]["samples"]
+        self.assertEqual(samples, plugin.samples)
+        self.assertEqual(len(samples), 1_023)
 
     def test_registered_execution_identity_binds_complete_process_bootstrap(
         self,

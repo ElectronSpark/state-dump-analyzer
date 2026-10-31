@@ -85,6 +85,20 @@ every emitted source type needs a `SourceRecordTypeDescriptor` in
 persisted revision, relationships, and findings; a hand-built world verifies
 hook composition without verifying durable scheduling.
 
+### Ingestion output value budgets
+
+For `IngestionLimits.max_output_value_units`, run:
+
+```text
+python -m unittest tests.test_ingestion_value_limits tests.test_ingestion tests.test_ingestion_execution_boundaries tests.test_package_preflight tests.test_scalable_schemas -v
+```
+
+The synthetic counter observation passes typed-schema validation but exceeds
+the default 4,096-unit complete-output envelope. The focused suite checks host
+configuration, admission and immutable publication, quota rejection, and
+unchanged depth/container/aggregate protections. The separate typed-property
+budget remains 4,096; changing the output budget does not expand schema bounds.
+
 ### Executable identity troubleshooting
 
 Before tests, print `sys.executable` and verify imports required by the selected

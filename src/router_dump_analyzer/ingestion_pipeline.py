@@ -1948,6 +1948,7 @@ def _dataset_with_execution_plan(
         primary_schema_digest=primary_pin.schema_digest,
         timeline_time_basis=TimelineTimeBasis(registered.timeline_time_basis),
         timeline_clock_domain=registered.timeline_clock_domain,
+        max_value_units=_registered_ingestion_limits(registered).max_output_value_units,
     )
     # Materialization is a later pipeline stage, loaded only after parser
     # normalization has produced an admitted result.

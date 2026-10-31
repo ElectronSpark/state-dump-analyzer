@@ -115,6 +115,7 @@ MAX_PARSED_OUTPUTS = 2_000_000
 MAX_OUTPUT_DEPTH = 16
 MAX_OUTPUT_CONTAINER_ITEMS = 1_024
 MAX_OUTPUT_UNITS = 4_096
+MAX_CONFIGURED_OUTPUT_UNITS = 65_536
 MAX_OUTPUT_ATOM_UNITS = 65_536
 MAX_OUTPUT_INTEGER_BITS = 4_096
 MAX_TOTAL_OUTPUTS = 2_000_000
@@ -375,6 +376,7 @@ class IngestionLimits:
     artifact_limits: ArtifactLimits = field(default_factory=ArtifactLimits)
     max_preflight_records: int = 4_096
     max_preflight_bytes: int = 16 * 1024 * 1024
+    max_output_value_units: int = MAX_OUTPUT_UNITS
 
     def __post_init__(self) -> None:
         if type(self.artifact_limits) is not ArtifactLimits:
@@ -386,6 +388,7 @@ class IngestionLimits:
             "max_decoder_outputs",
             "max_preflight_records",
             "max_preflight_bytes",
+            "max_output_value_units",
             "max_diagnostics",
             "max_evidence_items",
             "max_subject_references",
@@ -399,6 +402,10 @@ class IngestionLimits:
             value = getattr(self, name)
             if type(value) is not int or value < 1:
                 raise ValueError(f"{name} must be a positive integer")
+        if self.max_output_value_units > MAX_CONFIGURED_OUTPUT_UNITS:
+            raise ValueError(
+                f"max_output_value_units must not exceed {MAX_CONFIGURED_OUTPUT_UNITS}"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -493,6 +500,7 @@ def _json_value(
     _depth: int = 0,
     _units: list[int] | None = None,
     _active: set[int] | None = None,
+    max_value_units: int = MAX_OUTPUT_UNITS,
 ) -> Any:
     """Convert one plug-in value to bounded JSON without lossy fallback."""
 
@@ -503,7 +511,7 @@ def _json_value(
     if _depth > MAX_OUTPUT_DEPTH:
         raise IngestionError("plug-in output exceeds the maximum value depth")
     _units[0] += 1
-    if _units[0] > MAX_OUTPUT_UNITS:
+    if _units[0] > max_value_units:
         raise IngestionError("plug-in output exceeds the maximum value unit count")
     if value is None or isinstance(value, bool):
         return value
@@ -513,6 +521,7 @@ def _json_value(
             _depth=_depth,
             _units=_units,
             _active=_active,
+            max_value_units=max_value_units,
         )
     if isinstance(value, int):
         if value.bit_length() > MAX_OUTPUT_INTEGER_BITS:
@@ -558,6 +567,7 @@ def _json_value(
                         _depth=_depth + 1,
                         _units=_units,
                         _active=_active,
+                        max_value_units=max_value_units,
                     )
                     for key, item in value.items()
                 }
@@ -572,6 +582,7 @@ def _json_value(
                         _depth=_depth + 1,
                         _units=_units,
                         _active=_active,
+                        max_value_units=max_value_units,
                     )
                     for item in value
                 ]
@@ -584,6 +595,7 @@ def _json_value(
                     _depth=_depth + 1,
                     _units=_units,
                     _active=_active,
+                    max_value_units=max_value_units,
                 )
                 for descriptor in descriptors
             }
@@ -601,6 +613,7 @@ def _snapshot_parser_output_value(
     _units: list[int] | None = None,
     _active: set[int] | None = None,
     _normalize_enums: bool = False,
+    max_value_units: int = MAX_OUTPUT_UNITS,
 ) -> Any:
     """Deeply detach one already-validated parser output graph."""
 
@@ -609,7 +622,7 @@ def _snapshot_parser_output_value(
     if _depth > MAX_OUTPUT_DEPTH:
         raise IngestionError("plug-in output exceeds the maximum value depth")
     units[0] += 1
-    if units[0] > MAX_OUTPUT_UNITS:
+    if units[0] > max_value_units:
         raise IngestionError("plug-in output exceeds the maximum value unit count")
     value_type = type(value)
     if value is None or value_type in (bool, int, float, str):
@@ -624,6 +637,7 @@ def _snapshot_parser_output_value(
                 _units=units,
                 _active=active,
                 _normalize_enums=_normalize_enums,
+                max_value_units=max_value_units,
             )
         return value_type(value.value)
     if value_type is bytes:
@@ -664,6 +678,7 @@ def _snapshot_parser_output_value(
                     _units=units,
                     _active=active,
                     _normalize_enums=_normalize_enums,
+                    max_value_units=max_value_units,
                 )
             return MappingProxyType(detached)
         if is_sequence:
@@ -677,6 +692,7 @@ def _snapshot_parser_output_value(
                     _units=units,
                     _active=active,
                     _normalize_enums=_normalize_enums,
+                    max_value_units=max_value_units,
                 )
                 for item in sequence_value
             )
@@ -694,6 +710,7 @@ def _snapshot_parser_output_value(
                     _units=units,
                     _active=active,
                     _normalize_enums=_normalize_enums,
+                    max_value_units=max_value_units,
                 )
                 for descriptor in descriptors
                 if descriptor.init
@@ -803,12 +820,13 @@ class _IngestionBudget:
                     ),
                     "options": value.options,
                     "parser_kind": value.parser_kind,
-                }
+                },
+                max_value_units=self.limits.max_output_value_units,
             )
         elif type(value) is PluginSchema:
             normalized = plugin_schema_dataset(value)["schema"]
         else:
-            normalized = _json_value(value)
+            normalized = _json_value(value, max_value_units=self.limits.max_output_value_units)
         units, text_bytes = _normalized_value_size(normalized)
         self.value_units += units
         self.text_bytes += text_bytes
@@ -887,6 +905,7 @@ def _patch(
     *,
     default_quality: Quality,
     default_provenance: Provenance,
+    max_value_units: int = MAX_OUTPUT_UNITS,
 ) -> tuple[
     dict[str, Any],
     dict[str, dict[str, Any]],
@@ -901,16 +920,16 @@ def _patch(
         result, unknown, field_quality, field_provenance, patch,
         default_quality=default_quality,
         default_provenance=default_provenance,
-        project_value=_json_value,
-        project_unknown=_json_value,
+        project_value=partial(_json_value, max_value_units=max_value_units),
+        project_unknown=partial(_json_value, max_value_units=max_value_units),
         project_quality=lambda item: item.value,
         project_provenance=lambda item: item.value,
     )
     return result, unknown, field_quality, field_provenance
 
 
-def _evidence(value: Any) -> dict[str, Any]:
-    result = _json_value(value)
+def _evidence(value: Any, *, max_value_units: int = MAX_OUTPUT_UNITS) -> dict[str, Any]:
+    result = _json_value(value, max_value_units=max_value_units)
     assert isinstance(result, dict)
     return result
 
@@ -1061,6 +1080,7 @@ def _validate_resource(
     label: str,
     *,
     expected_node: str | None = None,
+    max_value_units: int = MAX_OUTPUT_UNITS,
 ) -> ResourceKey:
     if type(resource) is not ResourceKey:
         raise IngestionError(f"{label} must be an exact ResourceKey")
@@ -1079,7 +1099,7 @@ def _validate_resource(
         raise IngestionError(
             f"{label} key fields do not match the declared order for {resource.kind!r}"
         )
-    _json_value(resource)
+    _json_value(resource, max_value_units=max_value_units)
     return resource
 
 
@@ -1089,6 +1109,7 @@ def _validate_patch(
     allowed_roots: frozenset[str],
     artifact_ids: set[UUID],
     label: str,
+    max_value_units: int = MAX_OUTPUT_UNITS,
 ) -> PropertyPatch:
     if type(patch) is not PropertyPatch:
         raise IngestionError(f"{label} must be an exact PropertyPatch")
@@ -1179,7 +1200,7 @@ def _validate_patch(
     for name, provenance in patch.field_provenance.items():
         if not isinstance(provenance, Provenance):
             raise IngestionError(f"{label}.field_provenance[{name!r}] is invalid")
-    _json_value(patch)
+    _json_value(patch, max_value_units=max_value_units)
     return patch
 
 
@@ -1188,6 +1209,7 @@ def _validate_perspective(
     *,
     schema_index: _SchemaIndex,
     label: str,
+    max_value_units: int = MAX_OUTPUT_UNITS,
 ) -> StatusPerspectiveRef | None:
     if perspective is None:
         return None
@@ -1197,7 +1219,7 @@ def _validate_perspective(
         raise IngestionError(
             f"{label} references undeclared perspective {perspective.perspective_id!r}"
         )
-    _json_value(perspective)
+    _json_value(perspective, max_value_units=max_value_units)
     return perspective
 
 
@@ -1208,6 +1230,7 @@ def _validate_diagnostic(
     label: str,
     expected_origin: DiagnosticOrigin | None = None,
     expected_stage: DiagnosticStage | None = None,
+    max_value_units: int = MAX_OUTPUT_UNITS,
 ) -> PluginDiagnostic:
     try:
         validated = validate_plugin_diagnostic(
@@ -1219,7 +1242,7 @@ def _validate_diagnostic(
         )
     except ValueError as error:
         raise IngestionError(str(error)) from error
-    _json_value(diagnostic.details)
+    _json_value(diagnostic.details, max_value_units=max_value_units)
     return validated
 
 
@@ -1231,6 +1254,7 @@ def _validate_parser_output(
     expected_node: str,
     expected_diagnostic_stage: DiagnosticStage,
     label: str,
+    max_value_units: int = MAX_OUTPUT_UNITS,
 ) -> None:
     if type(output) is PluginDiagnostic:
         _validate_diagnostic(
@@ -1239,6 +1263,7 @@ def _validate_parser_output(
             label=label,
             expected_origin=DiagnosticOrigin.PLUGIN,
             expected_stage=expected_diagnostic_stage,
+            max_value_units=max_value_units,
         )
         return
     if type(output) is SnapshotObservation:
@@ -1247,6 +1272,7 @@ def _validate_parser_output(
             schema_index,
             label,
             expected_node=expected_node,
+            max_value_units=max_value_units,
         )
         _time_bounds(
             output.observed_at_min_ns,
@@ -1258,6 +1284,7 @@ def _validate_parser_output(
             allowed_roots=schema_index.property_roots_by_kind[resource.kind],
             artifact_ids=artifact_ids,
             label=f"{label}.state",
+            max_value_units=max_value_units,
         )
         try:
             validate_property_patch(output.state, schema_index.properties_by_kind[resource.kind])
@@ -1274,11 +1301,12 @@ def _validate_parser_output(
             artifact_ids=artifact_ids,
             label=f"{label}.evidence",
         )
-        _json_value(output.condition)
+        _json_value(output.condition, max_value_units=max_value_units)
         _validate_perspective(
             output.perspective_ref,
             schema_index=schema_index,
             label=f"{label}.perspective_ref",
+            max_value_units=max_value_units,
         )
         return
     if type(output) is RelationshipObservation:
@@ -1287,12 +1315,14 @@ def _validate_parser_output(
             schema_index,
             f"{label}.source",
             expected_node=expected_node,
+            max_value_units=max_value_units,
         )
         _validate_resource(
             output.target,
             schema_index,
             f"{label}.target",
             expected_node=expected_node,
+            max_value_units=max_value_units,
         )
         if output.relation_type not in schema_index.relationship_types:
             raise IngestionError(
@@ -1318,6 +1348,7 @@ def _validate_parser_output(
             ),
             artifact_ids=artifact_ids,
             label=f"{label}.attributes",
+            max_value_units=max_value_units,
         )
         if not isinstance(output.provenance, Provenance):
             raise IngestionError(f"{label}.provenance is invalid")
@@ -1332,6 +1363,7 @@ def _validate_parser_output(
             output.perspective_ref,
             schema_index=schema_index,
             label=f"{label}.perspective_ref",
+            max_value_units=max_value_units,
         )
         return
     if type(output) is RelationshipCollectionObservation:
@@ -1340,6 +1372,7 @@ def _validate_parser_output(
             schema_index,
             f"{label}.owner",
             expected_node=expected_node,
+            max_value_units=max_value_units,
         )
         if not isinstance(output.direction, RelationDirection):
             raise IngestionError(f"{label}.direction is invalid")
@@ -1368,6 +1401,7 @@ def _validate_parser_output(
             output.perspective_ref,
             schema_index=schema_index,
             label=f"{label}.perspective_ref",
+            max_value_units=max_value_units,
         )
         return
     if type(output) is DomainEvent:
@@ -1430,13 +1464,14 @@ def _validate_parser_output(
                 schema_index,
                 f"{label}.subjects[{index}]",
                 expected_node=expected_node,
+                max_value_units=max_value_units,
             )
         _validate_evidence(
             output.evidence,
             artifact_ids=artifact_ids,
             label=f"{label}.evidence",
         )
-        _json_value(output.attributes)
+        _json_value(output.attributes, max_value_units=max_value_units)
         if type(output.source) is not SourceRecordRef:
             raise IngestionError(f"{label}.source must be an exact SourceRecordRef")
         _bounded_text(
@@ -1545,7 +1580,7 @@ def _validate_parser_output(
             artifact_ids=artifact_ids,
             label=f"{label}.evidence[{index}]",
         )
-    _json_value(output.attributes)
+    _json_value(output.attributes, max_value_units=max_value_units)
 
 
 def _validate_ctf_message(
@@ -1553,6 +1588,7 @@ def _validate_ctf_message(
     *,
     artifact_ids: set[UUID],
     label: str,
+    max_value_units: int = MAX_OUTPUT_UNITS,
 ) -> CtfMessage:
     allowed = (
         CtfEventRecord,
@@ -1565,7 +1601,7 @@ def _validate_ctf_message(
     if type(message) not in allowed:
         raise IngestionError(f"{label} must be an exact dependency-free CtfMessage")
     typed = cast(CtfMessage, message)
-    _json_value(typed.decoder_metadata)
+    _json_value(typed.decoder_metadata, max_value_units=max_value_units)
     for field_name in ("trace_uid", "stream_uid"):
         _bounded_text(
             getattr(typed, field_name),
@@ -1628,10 +1664,10 @@ def _validate_ctf_message(
             f"{label}.packet_sequence",
             minimum=0,
         )
-        _json_value(event_record.payload)
-        _json_value(event_record.common_context)
-        _json_value(event_record.specific_context)
-        _json_value(event_record.packet_context)
+        _json_value(event_record.payload, max_value_units=max_value_units)
+        _json_value(event_record.common_context, max_value_units=max_value_units)
+        _json_value(event_record.specific_context, max_value_units=max_value_units)
+        _json_value(event_record.packet_context, max_value_units=max_value_units)
     elif isinstance(typed, (CtfStreamBoundary, CtfPacketBoundary)):
         boundary = typed
         if type(boundary.started) is not bool:
@@ -1743,6 +1779,7 @@ def _build_dataset(
     timeline_clock_domain: str | None,
     primary_plugin_instance_id: str | None = None,
     primary_schema_digest: str | None = None,
+    max_value_units: int = MAX_OUTPUT_UNITS,
 ) -> dict[str, Any]:
     snapshots = bind_observation_perspectives(
         snapshots,
@@ -1851,6 +1888,7 @@ def _build_dataset(
                 observation.state,
                 default_quality=observation.quality,
                 default_provenance=observation.provenance,
+                max_value_units=max_value_units,
             )
             valid_from = observation.observed_at_min_ns
             next_observation = (
@@ -1889,16 +1927,16 @@ def _build_dataset(
                     else observation.condition_class.value
                 ),
                 "status_class": observation.condition_class.value,
-                "condition": _json_value(observation.condition),
+                "condition": _json_value(observation.condition, max_value_units=max_value_units),
                 "properties": dict(current),
                 "unknown_fields": list(current_unknown.values()),
                 "field_quality": dict(current_field_quality),
                 "field_provenance": dict(current_field_provenance),
                 "provenance": observation.provenance.value,
                 "quality": observation.quality.value,
-                "evidence": [_evidence(observation.evidence)],
+                "evidence": [_evidence(observation.evidence, max_value_units=max_value_units)],
                 "perspective_ref": (
-                    _json_value(observation.perspective_ref)
+                    _json_value(observation.perspective_ref, max_value_units=max_value_units)
                     if observation.perspective_ref is not None
                     else None
                 ),
@@ -1987,6 +2025,7 @@ def _build_dataset(
                 relationship_observation.attributes,
                 default_quality=relationship_observation.quality,
                 default_provenance=relationship_observation.provenance,
+                max_value_units=max_value_units,
             )
             valid_from = relationship_observation.observed_at_min_ns
             valid_to = (
@@ -2018,9 +2057,9 @@ def _build_dataset(
                 "field_provenance": dict(relationship_field_provenance),
                 "provenance": relationship_observation.provenance.value,
                 "quality": relationship_observation.quality.value,
-                "evidence": [_evidence(relationship_observation.evidence)],
+                "evidence": [_evidence(relationship_observation.evidence, max_value_units=max_value_units)],
                 "perspective_ref": (
-                    _json_value(relationship_observation.perspective_ref)
+                    _json_value(relationship_observation.perspective_ref, max_value_units=max_value_units)
                     if relationship_observation.perspective_ref is not None
                     else None
                 ),
@@ -2067,7 +2106,7 @@ def _build_dataset(
                 "event_name": event.event_type,
                 "action": event.action,
                 "outcome": event.outcome.value,
-                "attributes": _json_value(event.attributes),
+                "attributes": _json_value(event.attributes, max_value_units=max_value_units),
                 "subjects": [
                     {
                         "resource_id": resource_ids[subject],
@@ -2083,7 +2122,7 @@ def _build_dataset(
                 "layer": (event.subjects[0].layer if event.subjects else None),
                 "provenance": event.provenance.value,
                 "quality": event.quality.value,
-                "evidence": _evidence(event.evidence),
+                "evidence": _evidence(event.evidence, max_value_units=max_value_units),
             }
         )
 
@@ -2135,10 +2174,10 @@ def _build_dataset(
                 "record_name": emission.record_name,
                 "message": emission.message,
                 "layer": emission.layer,
-                "attributes": _json_value(emission.attributes),
+                "attributes": _json_value(emission.attributes, max_value_units=max_value_units),
                 "matched_event_uid": matched[0] if matched else None,
                 "matched_event_uids": matched,
-                "evidence": [_evidence(item) for item in emission.evidence],
+                "evidence": [_evidence(item, max_value_units=max_value_units) for item in emission.evidence],
                 "copy_text": emission.copy_text,
             }
         )
@@ -2174,9 +2213,9 @@ def _build_dataset(
             "complete": item.complete,
             "provenance": item.provenance.value,
             "quality": item.quality.value,
-            "evidence": [_evidence(item.evidence)],
+            "evidence": [_evidence(item.evidence, max_value_units=max_value_units)],
             "perspective_ref": (
-                _json_value(item.perspective_ref)
+                _json_value(item.perspective_ref, max_value_units=max_value_units)
                 if item.perspective_ref is not None
                 else None
             ),
@@ -2208,7 +2247,7 @@ def _build_dataset(
         for record in normalized_source_records
         for event_uid in record["matched_event_uids"]
     }
-    normalized_diagnostics = [_json_value(item) for item in diagnostics]
+    normalized_diagnostics = [_json_value(item, max_value_units=max_value_units) for item in diagnostics]
     runtime_gaps = [
         {
             "id": "runtime-v2-temporal-query",
@@ -2392,6 +2431,7 @@ def _snapshot_publication_inventory(
     *,
     node_id: str,
     limits: ArtifactLimits,
+    max_value_units: int = MAX_OUTPUT_UNITS,
 ) -> DumpInventory:
     """Detach and validate the inventory retained by a coordinator result."""
 
@@ -2426,7 +2466,7 @@ def _snapshot_publication_inventory(
             raise IngestionError(
                 f"inventory.artifacts[{index}] must be an exact ArtifactInfo"
             )
-        artifact = _snapshot_parser_output_value(raw_artifact)
+        artifact = _snapshot_parser_output_value(raw_artifact, max_value_units=max_value_units)
         assert type(artifact) is ArtifactInfo
         if type(artifact.artifact_id) is not UUID:
             raise IngestionError("inventory artifact identifier must be a UUID")
@@ -2529,10 +2569,10 @@ def _snapshot_publication_inventory(
         for visited in trail:
             visit_state[visited] = 2
 
-    detached_metadata = _snapshot_parser_output_value(captured_metadata)
+    detached_metadata = _snapshot_parser_output_value(captured_metadata, max_value_units=max_value_units)
     if not isinstance(detached_metadata, Mapping):
         raise IngestionError("inventory metadata must be a mapping")
-    _json_value(detached_metadata)
+    _json_value(detached_metadata, max_value_units=max_value_units)
     return DumpInventory(
         node_hint=node_hint,
         artifacts=tuple(artifacts),
@@ -2722,6 +2762,7 @@ def snapshot_ingestion_result_for_publication(
         captured_inventory,
         node_id=node_id,
         limits=limits.artifact_limits,
+        max_value_units=limits.max_output_value_units,
     )
     schema = _schema_snapshot(captured_schema)
     if type(schema) is not PluginSchema:
@@ -2747,11 +2788,12 @@ def snapshot_ingestion_result_for_publication(
             raise IngestionError(
                 f"diagnostics[{index}] must be an exact PluginDiagnostic"
             )
-        detached = _snapshot_parser_output_value(item)
+        detached = _snapshot_parser_output_value(item, max_value_units=limits.max_output_value_units)
         _validate_diagnostic(
             detached,
             artifact_ids=artifact_ids,
             label=f"diagnostics[{index}]",
+            max_value_units=limits.max_output_value_units,
         )
         if (
             (detached.origin, detached.stage) not in allowed_diagnostic_pairs
@@ -2804,7 +2846,7 @@ def snapshot_ingestion_result_for_publication(
                     f"{group_name}[{index}] must be an exact "
                     f"{expected_type.__name__}"
                 )
-            detached = _snapshot_parser_output_value(item)
+            detached = _snapshot_parser_output_value(item, max_value_units=limits.max_output_value_units)
             _validate_parser_output(
                 detached,
                 schema_index=schema_index,
@@ -2812,6 +2854,7 @@ def snapshot_ingestion_result_for_publication(
                 expected_node=node_id,
                 expected_diagnostic_stage=DiagnosticStage.STATUS_PARSE,
                 label=f"{group_name}[{index}]",
+                max_value_units=limits.max_output_value_units,
             )
             budget.consume(detached, label=f"{group_name}[{index}]")
             detached_items.append(detached)
@@ -2899,6 +2942,7 @@ def snapshot_ingestion_result_for_publication(
         diagnostics=tuple(diagnostics),
         timeline_time_basis=timeline_time_basis,
         timeline_clock_domain=timeline_clock_domain,
+        max_value_units=limits.max_output_value_units,
     )
     _require_exact_dataset_projection(captured_dataset, rebuilt_dataset)
     return IngestionResult(
@@ -2929,6 +2973,7 @@ def _bind_primary_ingestion_perspectives(
     primary_schema_digest: str,
     timeline_time_basis: TimelineTimeBasis,
     timeline_clock_domain: str | None,
+    max_value_units: int = MAX_OUTPUT_UNITS,
 ) -> IngestionResult:
     """Bind an already-admitted coordinator result once its plan is frozen.
 
@@ -2978,6 +3023,7 @@ def _bind_primary_ingestion_perspectives(
         diagnostics=result.diagnostics,
         timeline_time_basis=timeline_time_basis,
         timeline_clock_domain=timeline_clock_domain,
+        max_value_units=max_value_units,
     )
     dataset = dict(result.dataset)
     for name in (
@@ -2999,6 +3045,8 @@ def _fingerprint(
     manifest: _IngestionManifestSnapshot,
     schema: PluginSchema,
     specs: Sequence[InputSpec],
+    *,
+    max_value_units: int = MAX_OUTPUT_UNITS,
 ) -> str:
     def add(value: bytes) -> None:
         digest.update(len(value).to_bytes(8, "big"))
@@ -3028,8 +3076,8 @@ def _fingerprint(
         ).encode("utf-8")
     )
     add(canonical_json(plugin_schema_dataset(schema)["schema"]).encode("utf-8"))
-    add(canonical_json(_json_value(reader.inventory.node_hint)).encode("utf-8"))
-    add(canonical_json(_json_value(reader.inventory.metadata)).encode("utf-8"))
+    add(canonical_json(_json_value(reader.inventory.node_hint, max_value_units=max_value_units)).encode("utf-8"))
+    add(canonical_json(_json_value(reader.inventory.metadata, max_value_units=max_value_units)).encode("utf-8"))
     logical_path_by_id = {
         artifact.artifact_id: artifact.logical_path.as_posix()
         for artifact in reader.inventory.artifacts
@@ -3075,7 +3123,7 @@ def _fingerprint(
                         if spec.logical_root is not None
                         else None
                     ),
-                    "options": _json_value(spec.options),
+                    "options": _json_value(spec.options, max_value_units=max_value_units),
                     "parser_kind": (
                         spec.parser_kind.value if spec.parser_kind is not None else None
                     ),
@@ -3127,19 +3175,25 @@ class _PackageRecords:
                         label=label,
                         expected_origin=DiagnosticOrigin.CORE_DECODER,
                         expected_stage=DiagnosticStage.TRACE_DECODE,
+                        max_value_units=self.budget.limits.max_output_value_units,
                     )
-                    self.diagnostics.append(_snapshot_parser_output_value(message))
+                    self.diagnostics.append(_snapshot_parser_output_value(
+                        message, max_value_units=self.budget.limits.max_output_value_units,
+                    ))
                     if not message.recoverable:
                         raise IngestionError(
                             f"CTF decoder failed: {message.code}: {message.message}"
                         )
                     continue
                 validated = _validate_ctf_message(
-                    message, artifact_ids=artifact_ids, label=label
+                    message, artifact_ids=artifact_ids, label=label,
+                    max_value_units=self.budget.limits.max_output_value_units,
                 )
                 self.budget.consume(validated, label=label, decoder=True)
                 # A decoder or a preflight consumer must not mutate later replay.
-                yield _snapshot_parser_output_value(validated)
+                yield _snapshot_parser_output_value(
+                    validated, max_value_units=self.budget.limits.max_output_value_units,
+                )
         except Exception as error:
             self.failure = error
             raise
@@ -3173,7 +3227,9 @@ class _PackageRecords:
                 except StopIteration:
                     return
                 self.record_count += 1
-                self.byte_count += len(canonical_json(_json_value(message)).encode("utf-8"))
+                self.byte_count += len(canonical_json(_json_value(
+                    message, max_value_units=self.budget.limits.max_output_value_units,
+                )).encode("utf-8"))
                 if self.record_count > self.budget.limits.max_preflight_records:
                     raise IngestionError("package preflight exceeded the record replay limit")
                 if self.byte_count > self.budget.limits.max_preflight_bytes:
@@ -3279,7 +3335,9 @@ class IngestionCoordinator:
                 )
             except ValueError as error:
                 raise IngestionError(f"probe report is invalid: {error}") from error
-            detached_report = _snapshot_parser_output_value(report)
+            detached_report = _snapshot_parser_output_value(
+                report, max_value_units=self.limits.max_output_value_units,
+            )
             if type(detached_report) is not ProbeReport:
                 raise IngestionError("probe() must return an exact ProbeReport")
             try:
@@ -3312,7 +3370,7 @@ class IngestionCoordinator:
                     output=False,
                 )
                 match_kind = ProbeMatchKind(probe_result.match_kind)
-                _json_value(probe_result)
+                _json_value(probe_result, max_value_units=self.limits.max_output_value_units)
             else:
                 match_kind = ProbeMatchKind.NONE
             if report.result is None or match_kind is ProbeMatchKind.NONE:
@@ -3361,7 +3419,7 @@ class IngestionCoordinator:
                         "locate_inputs() outputs must be exact InputSpec or "
                         "PluginDiagnostic"
                     )
-                output = _snapshot_parser_output_value(output)
+                output = _snapshot_parser_output_value(output, max_value_units=self.limits.max_output_value_units)
                 budget.consume(
                     output,
                     label=f"locate_inputs[{index}]",
@@ -3373,6 +3431,7 @@ class IngestionCoordinator:
                         label=f"locate_inputs[{index}]",
                         expected_origin=DiagnosticOrigin.PLUGIN,
                         expected_stage=DiagnosticStage.LOCATE,
+                        max_value_units=self.limits.max_output_value_units,
                     )
                     diagnostics.append(output)
                     if not output.recoverable:
@@ -3409,7 +3468,7 @@ class IngestionCoordinator:
                     f"locate_inputs[{index}].parser_id",
                     maximum=256,
                 )
-                _json_value(output.options)
+                _json_value(output.options, max_value_units=self.limits.max_output_value_units)
                 if not isinstance(output.artifact_ids, tuple) or any(
                     not isinstance(artifact_id, UUID)
                     for artifact_id in output.artifact_ids
@@ -3496,7 +3555,10 @@ class IngestionCoordinator:
                     if type(context) is not PackageContext:
                         raise IngestionError("preflight_package() must return PackageContext")
                     budget.consume(context, label="preflight_package")
-                    context = _snapshot_parser_output_value(context, _normalize_enums=True)
+                    context = _snapshot_parser_output_value(
+                        context, _normalize_enums=True,
+                        max_value_units=self.limits.max_output_value_units,
+                    )
                     if not isinstance(context.values, Mapping):
                         raise IngestionError("PackageContext.values must be a mapping")
                     artifact_ids = {item.artifact_id for item in reader.inventory.artifacts}
@@ -3593,8 +3655,11 @@ class IngestionCoordinator:
                             else DiagnosticStage.TRACE_MAP
                         ),
                         label=(f"{spec.dispatch_hook}[{input_ordinal}:{ordinal}]"),
+                        max_value_units=self.limits.max_output_value_units,
                     )
-                    detached_output = _snapshot_parser_output_value(output)
+                    detached_output = _snapshot_parser_output_value(
+                        output, max_value_units=self.limits.max_output_value_units,
+                    )
                     _validate_parser_output(
                         detached_output,
                         schema_index=schema_index,
@@ -3606,6 +3671,7 @@ class IngestionCoordinator:
                             else DiagnosticStage.TRACE_MAP
                         ),
                         label=(f"{spec.dispatch_hook}[{input_ordinal}:{ordinal}]"),
+                        max_value_units=self.limits.max_output_value_units,
                     )
                     if isinstance(detached_output, SnapshotObservation):
                         snapshots.append(detached_output)
@@ -3723,7 +3789,7 @@ class IngestionCoordinator:
         selected = self._snapshot_plugin(plugin)
         budget = _IngestionBudget(self.limits)
         schema, schema_index = self._schema(selected, budget)
-        serialized_metadata = _json_value(metadata or {})
+        serialized_metadata = _json_value(metadata or {}, max_value_units=self.limits.max_output_value_units)
         assert isinstance(serialized_metadata, dict)
         safe_metadata = serialized_metadata
         report_analysis_load(
@@ -3808,6 +3874,7 @@ class IngestionCoordinator:
                     selected.manifest,
                     schema,
                     specs,
+                    max_value_units=self.limits.max_output_value_units,
                 ),
             )
             (
@@ -3886,6 +3953,7 @@ class IngestionCoordinator:
                 diagnostics=diagnostics,
                 timeline_time_basis=selected.manifest.timeline_time_basis,
                 timeline_clock_domain=selected.manifest.timeline_clock_domain,
+                max_value_units=self.limits.max_output_value_units,
             )
 
         revision_id, dataset = _plugin_execution_boundary(

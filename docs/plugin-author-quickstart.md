@@ -108,6 +108,12 @@ preflight or query-time projections, follow the
 version rules and delivery decisions in your plug-in; use core's immutable
 context and public service hooks rather than shared mutable state/private stores.
 
+If a schema-valid observation exceeds the default 4,096-unit output envelope,
+the host can select a bounded `IngestionLimits.max_output_value_units`; see
+[host output budgets](plugin-author-guide.md#host-configured-output-value-units).
+The teaching parser needs no limit override. Depth, container, typed-property,
+and aggregate protections still apply.
+
 The generated corpus policy, scenario builders, archive adapter, and fixture
 generator are separate demo concerns. Copy only the teaching slice described
 above. See the [detailed implementation walkthrough](plugin-author-guide.md#3-implement-the-parser-and-revision-analysis)

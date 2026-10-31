@@ -2093,6 +2093,11 @@ coordinator, decoder, provider, publisher, or bound-method objects. The child
 loads module-level targets or no-argument classes, re-registers them, and
 requires the same frozen execution identity. A target-only or frozen-limit
 change therefore changes the plan authority and fails child attestation.
+This includes `IngestionLimits.max_output_value_units`: the host-configured
+per-output validation and snapshot budget defaults to 4,096 and accepts exact
+integers from 1 through 65,536. Publication uses the frozen setting as well.
+It is not an HTTP request override and does not change schema, depth/container,
+or aggregate limits; see the [ingestion contract](plugin-contract.md).
 External plug-in/coordinator/decoder targets also carry exact static-import,
 bounded module/package-byte, and Python-code identity; dynamic aliases and
 sourceless targets are unavailable. Parent and child revalidate these

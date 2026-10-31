@@ -1255,6 +1255,11 @@ The validation budget is ingestion-wide as well as per value: the default
 aggregate limits cover two million outputs, two million decoder records,
 100,000 diagnostics, four million each of evidence items, subject references,
 and event links, 64 million normalized value units, and 256 MiB of UTF-8 text.
+The per-output traversal budget defaults to 4,096 units. Hosts may configure
+`IngestionLimits.max_output_value_units` from 1 through 65,536; the frozen
+registration carries it through validation, detachment, dataset rebuilding,
+publication, and child bootstrap. Independent schema, depth, container, atom,
+and aggregate limits remain unchanged.
 This bounds memory growth from many individually valid records; it is not an
 execution deadline. The durable control plane separately applies its
 killable child-process deadline to probe and ingestion (300 seconds by

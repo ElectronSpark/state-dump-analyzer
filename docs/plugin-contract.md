@@ -1096,8 +1096,19 @@ plug-in/decoder outputs, 2,000,000 decoder outputs, 100,000 diagnostics,
 source-to-event links, 64,000,000 normalized value units, and 256 MiB of UTF-8
 text. One output may contain at most 4,096 evidence items, 4,096 event subjects,
 and 4,096 source-to-event links. One output value is separately bounded to 16
-nested levels, 1,024 items in one container, 4,096 total value units, 65,536
-units for one string/byte atom, and 4,096 bits for one integer. The validator
+nested levels, 1,024 items in one container, 4,096 total value units by default,
+65,536 units for one string/byte atom, and 4,096 bits for one integer. The host
+MAY set `IngestionLimits.max_output_value_units` to an exact integer from 1
+through 65,536; booleans are invalid. The default remains 4,096, and the appended
+field preserves existing positional construction. This is a host setting, not
+a plug-in capability or input-supplied override. Core MUST apply the selected
+limit consistently during output validation, deep snapshotting, normalized
+dataset construction, and publication. Frozen registration and child-process
+bootstrap MUST carry the same setting. Raising it MUST NOT relax the separate
+depth, container, atom, integer, evidence, aggregate, or schema budgets. In
+particular, typed-property structural validation retains its independent
+4,096-unit budget; output envelopes also include resource and evidence values.
+The validator
 rejects booleans masquerading as integers, non-finite floats, reference cycles,
 unsupported value types, undeclared schema references, invalid observation
 bounds, evidence outside the selected input, wrong output classes, and

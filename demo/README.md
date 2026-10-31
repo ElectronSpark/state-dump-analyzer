@@ -86,6 +86,31 @@ exercised by the [synthetic core extension suite](../docs/plugin-api-validation.
 Those tests include ordinary protocol objects; inheriting `AnalyzerPluginBase`
 is convenient for this teaching slice, but is not a runtime requirement.
 
+### Host output budget
+
+The teaching fixture fits the default 4,096-unit output limit. A host admitting
+larger schema-valid output envelopes can configure the coordinator explicitly:
+
+```python
+from pathlib import Path
+
+from router_dump_analyzer.ingestion import IngestionCoordinator, IngestionLimits
+from rsl_demo_plugin import parser_plugin
+
+coordinator = IngestionCoordinator(
+    limits=IngestionLimits(max_output_value_units=16_384),
+)
+result = coordinator.ingest(parser_plugin, Path("demo/fixtures/minimal-status.jsonl"))
+assert result.snapshots
+```
+
+Run from the repository root after installing core and demo. The host setting
+accepts integers from 1 through 65,536; the default remains 4,096. It does not
+change the parser, typed-property budget, depth/container bounds, or aggregate
+quotas. The [focused ingestion checks](../docs/plugin-api-validation.md#ingestion-output-value-budgets)
+exercise a larger synthetic observation, default rejection, and unchanged
+protections.
+
 The distribution uses the collision-resistant import packages
 `rsl_demo_plugin` and `rsl_demo_generator`. It deliberately does not publish
 generic top-level packages named `plugin` or `generator`, which are likely to

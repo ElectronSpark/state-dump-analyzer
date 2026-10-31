@@ -758,6 +758,27 @@ evidence items, subjects, or event links, in addition to the smaller
 per-value depth/container/atom limits. Treat these as hard ceilings, not batch
 size targets; stream much smaller batches in production.
 
+#### Host-configured output value units
+
+The complete output envelope defaults to 4,096 traversed value units, including
+resource identity, evidence, and the property patch. A schema-valid property
+can fit its own budget while the enclosing observation exceeds this ceiling.
+For example, 1,023 sample objects with three typed integers each use 4,093
+property-validation units before the observation envelope is counted.
+
+Hosts can construct `IngestionCoordinator(limits=IngestionLimits(
+max_output_value_units=16_384))`. The setting accepts exact integers from 1
+through 65,536 and keeps the existing default and positional arguments.
+Validation, snapshots, dataset construction, publication, and process bootstrap
+use the selected limit. It changes no plug-in hook and has no CLI override.
+Depth 16, 1,024 items per container, atom limits, ingestion-wide quotas, and the
+independent 4,096-unit typed-property budget remain in force. Larger values must
+still satisfy all of those protections.
+
+The [example host invocation](../demo/README.md#host-output-budget) uses the
+teaching parser. Run `python -m unittest tests.test_ingestion_value_limits -v`
+for the synthetic envelope reproducer and quota regressions.
+
 The current coordinator validates and retains
 `RelationshipCollectionObservation` completeness markers as private normalized
 ingestion metadata. It does not yet materialize those markers into public

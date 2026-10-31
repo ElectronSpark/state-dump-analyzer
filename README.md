@@ -433,6 +433,7 @@ For the shortest working path, use these resources:
 - **Extend:** [Detailed author guide](docs/plugin-author-guide.md)
 - **Reference:** [Normative plug-in contract](docs/plugin-contract.md)
 - **Validate core extension boundaries:** [CTF, preflight, schemas and query hooks](docs/plugin-api-validation.md#run-a-check).
+- **Configure output budgets:** [Host limits and ingestion checks](docs/plugin-api-validation.md#ingestion-output-value-budgets).
 - **Validate historical routes:** [Temporal route and correlation checks](docs/plugin-api-validation.md#historical-route-and-correlation-checks).
 - **Validate source navigation:** [Core source-record filters](docs/api-contract.md#6-timeline-and-cluster-expansion), exercised by `python -m unittest tests.test_source_record_core -v`.
 
