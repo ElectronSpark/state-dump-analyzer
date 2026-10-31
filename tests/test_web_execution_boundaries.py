@@ -57,16 +57,21 @@ async def _asgi_get(
 ) -> _ASGIResult:
     messages: list[dict[str, Any]] = []
     request_sent = False
+    response_complete = asyncio.Event()
 
     async def receive() -> dict[str, Any]:
         nonlocal request_sent
         if not request_sent:
             request_sent = True
             return {"type": "http.request", "body": b"", "more_body": False}
+        # A connected client must not cancel provider acquisition before it runs.
+        await response_complete.wait()
         return {"type": "http.disconnect"}
 
     async def send(message: dict[str, Any]) -> None:
         messages.append(message)
+        if message["type"] == "http.response.body" and not message.get("more_body"):
+            response_complete.set()
 
     scope = {
         "type": "http",

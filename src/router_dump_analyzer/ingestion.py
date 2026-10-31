@@ -12,7 +12,8 @@ from __future__ import annotations
 import unicodedata
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextlib import AbstractContextManager, ExitStack, contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import Enum
@@ -25,6 +26,7 @@ from types import MappingProxyType
 from typing import Any, cast
 from uuid import UUID
 
+from . import plugin_api as _plugin_api
 from .artifact_core import (
     ArtifactBoundaryError,
     ArtifactLimits,
@@ -66,6 +68,7 @@ from .plugin_api import (
     InputSpec,
     KeyAtom,
     Outcome,
+    PackageContext,
     PluginCapability,
     PluginDiagnostic,
     PluginManifest,
@@ -95,8 +98,10 @@ from .plugin_schema_identity import (
     PluginSchemaIdentityError,
     plugin_schema_dataset,
     plugin_schema_digest,
+    snapshot_plugin_schema,
 )
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
+from .property_schema import validate_property_patch
 from .revision_store import (
     AssemblyDescriptor,
     RevisionDescriptor,
@@ -368,6 +373,8 @@ class IngestionLimits:
     max_subjects_per_event: int = MAX_SUBJECTS_PER_EVENT
     max_event_links_per_record: int = MAX_EVENT_LINKS_PER_RECORD
     artifact_limits: ArtifactLimits = field(default_factory=ArtifactLimits)
+    max_preflight_records: int = 4_096
+    max_preflight_bytes: int = 16 * 1024 * 1024
 
     def __post_init__(self) -> None:
         if type(self.artifact_limits) is not ArtifactLimits:
@@ -377,6 +384,8 @@ class IngestionLimits:
             "max_parsed_outputs",
             "max_total_outputs",
             "max_decoder_outputs",
+            "max_preflight_records",
+            "max_preflight_bytes",
             "max_diagnostics",
             "max_evidence_items",
             "max_subject_references",
@@ -591,6 +600,7 @@ def _snapshot_parser_output_value(
     _depth: int = 0,
     _units: list[int] | None = None,
     _active: set[int] | None = None,
+    _normalize_enums: bool = False,
 ) -> Any:
     """Deeply detach one already-validated parser output graph."""
 
@@ -605,6 +615,16 @@ def _snapshot_parser_output_value(
     if value is None or value_type in (bool, int, float, str):
         return value
     if isinstance(value, Enum):
+        if _normalize_enums or getattr(_plugin_api, value_type.__name__, None) is not value_type:
+            # Plug-in enum members are process-global singletons and may carry
+            # mutable attributes. Transfer their value, never the foreign object.
+            return _snapshot_parser_output_value(
+                value.value,
+                _depth=_depth + 1,
+                _units=units,
+                _active=active,
+                _normalize_enums=_normalize_enums,
+            )
         return value_type(value.value)
     if value_type is bytes:
         return bytes(value)
@@ -643,6 +663,7 @@ def _snapshot_parser_output_value(
                     _depth=_depth + 1,
                     _units=units,
                     _active=active,
+                    _normalize_enums=_normalize_enums,
                 )
             return MappingProxyType(detached)
         if is_sequence:
@@ -655,10 +676,11 @@ def _snapshot_parser_output_value(
                     _depth=_depth + 1,
                     _units=units,
                     _active=active,
+                    _normalize_enums=_normalize_enums,
                 )
                 for item in sequence_value
             )
-        if value_type.__module__ != "router_dump_analyzer.plugin_api":
+        if getattr(_plugin_api, value_type.__name__, None) is not value_type:
             raise IngestionError("plug-in output contains an unsupported record type")
         descriptors = fields(value)
         if len(descriptors) > MAX_OUTPUT_CONTAINER_ITEMS:
@@ -671,6 +693,7 @@ def _snapshot_parser_output_value(
                     _depth=_depth + 1,
                     _units=units,
                     _active=active,
+                    _normalize_enums=_normalize_enums,
                 )
                 for descriptor in descriptors
                 if descriptor.init
@@ -706,7 +729,7 @@ def _output_cardinality(value: Any) -> tuple[int, int, int]:
     evidence_count = 0
     subject_count = 0
     event_link_count = 0
-    if isinstance(value, PluginDiagnostic):
+    if isinstance(value, (PluginDiagnostic, PackageContext)):
         evidence_count = len(value.evidence)
     elif isinstance(value, SnapshotObservation):
         evidence_count = 1 + sum(
@@ -782,6 +805,8 @@ class _IngestionBudget:
                     "parser_kind": value.parser_kind,
                 }
             )
+        elif type(value) is PluginSchema:
+            normalized = plugin_schema_dataset(value)["schema"]
         else:
             normalized = _json_value(value)
         units, text_bytes = _normalized_value_size(normalized)
@@ -999,6 +1024,7 @@ class _SchemaIndex:
     relationship_types: frozenset[str]
     source_types: frozenset[str]
     perspective_ids: frozenset[str]
+    properties_by_kind: dict[str, tuple[Any, ...]]
 
     @classmethod
     def build(cls, schema: PluginSchema) -> _SchemaIndex:
@@ -1023,6 +1049,9 @@ class _SchemaIndex:
             perspective_ids=frozenset(
                 descriptor.perspective_id for descriptor in schema.status_perspectives
             ),
+            properties_by_kind={
+                descriptor.kind: descriptor.properties for descriptor in schema.resource_kinds
+            },
         )
 
 
@@ -1230,6 +1259,10 @@ def _validate_parser_output(
             artifact_ids=artifact_ids,
             label=f"{label}.state",
         )
+        try:
+            validate_property_patch(output.state, schema_index.properties_by_kind[resource.kind])
+        except ValueError as error:
+            raise IngestionError(f"{label}.state: {error}") from error
         if not isinstance(output.provenance, Provenance):
             raise IngestionError(f"{label}.provenance is invalid")
         if not isinstance(output.quality, Quality):
@@ -1532,6 +1565,7 @@ def _validate_ctf_message(
     if type(message) not in allowed:
         raise IngestionError(f"{label} must be an exact dependency-free CtfMessage")
     typed = cast(CtfMessage, message)
+    _json_value(typed.decoder_metadata)
     for field_name in ("trace_uid", "stream_uid"):
         _bounded_text(
             getattr(typed, field_name),
@@ -1597,6 +1631,7 @@ def _validate_ctf_message(
         _json_value(event_record.payload)
         _json_value(event_record.common_context)
         _json_value(event_record.specific_context)
+        _json_value(event_record.packet_context)
     elif isinstance(typed, (CtfStreamBoundary, CtfPacketBoundary)):
         boundary = typed
         if type(boundary.started) is not bool:
@@ -1648,6 +1683,13 @@ def _schema_dataset(schema: PluginSchema) -> dict[str, Any]:
     try:
         return plugin_schema_dataset(schema)
     except PluginSchemaIdentityError as error:
+        raise IngestionError("plug-in schema cannot be normalized") from error
+
+
+def _schema_snapshot(schema: PluginSchema) -> PluginSchema:
+    try:
+        return snapshot_plugin_schema(schema)
+    except (PluginSchemaIdentityError, TypeError, ValueError) as error:
         raise IngestionError("plug-in schema cannot be normalized") from error
 
 
@@ -2681,7 +2723,7 @@ def snapshot_ingestion_result_for_publication(
         node_id=node_id,
         limits=limits.artifact_limits,
     )
-    schema = _snapshot_parser_output_value(captured_schema)
+    schema = _schema_snapshot(captured_schema)
     if type(schema) is not PluginSchema:
         raise IngestionError("schema must be an exact PluginSchema")
     schema_index = _SchemaIndex.build(schema)
@@ -2985,7 +3027,7 @@ def _fingerprint(
             }
         ).encode("utf-8")
     )
-    add(canonical_json(_json_value(schema)).encode("utf-8"))
+    add(canonical_json(plugin_schema_dataset(schema)["schema"]).encode("utf-8"))
     add(canonical_json(_json_value(reader.inventory.node_hint)).encode("utf-8"))
     add(canonical_json(_json_value(reader.inventory.metadata)).encode("utf-8"))
     logical_path_by_id = {
@@ -3045,6 +3087,123 @@ def _fingerprint(
     return digest.hexdigest()
 
 
+class _PackageRecords:
+    """One package's decoder streams and bounded, immutable preflight replay."""
+
+    def __init__(
+        self,
+        reader: CoreArtifactReader,
+        specs: tuple[InputSpec, ...],
+        decoder: TraceDecoder | None,
+        budget: _IngestionBudget,
+        diagnostics: list[PluginDiagnostic],
+    ) -> None:
+        self.reader = reader
+        self.specs = specs
+        self.decoder = decoder
+        self.budget = budget
+        self.diagnostics = diagnostics
+        self.streams: dict[int, Iterator[CtfMessage]] = {}
+        self.prefixes: dict[int, list[CtfMessage]] = {}
+        self.record_count = 0
+        self.byte_count = 0
+        self.preflight = True
+        self.failure: Exception | None = None
+
+    def _decode(self, ordinal: int) -> Iterator[CtfMessage]:
+        if self.decoder is None:
+            raise IngestionError("CTF input requires a core TraceDecoder")
+        spec = self.specs[ordinal]
+        artifact_ids = set(spec.artifact_ids)
+        iterator = iter(self.decoder.iter_ctf(self.reader.scoped(spec.artifact_ids), spec))
+        try:
+            for index, message in enumerate(iterator):
+                label = f"trace_decoder[{ordinal}:{index}]"
+                if type(message) is PluginDiagnostic:
+                    self.budget.consume(message, label=label, decoder=True)
+                    _validate_diagnostic(
+                        message,
+                        artifact_ids=artifact_ids,
+                        label=label,
+                        expected_origin=DiagnosticOrigin.CORE_DECODER,
+                        expected_stage=DiagnosticStage.TRACE_DECODE,
+                    )
+                    self.diagnostics.append(_snapshot_parser_output_value(message))
+                    if not message.recoverable:
+                        raise IngestionError(
+                            f"CTF decoder failed: {message.code}: {message.message}"
+                        )
+                    continue
+                validated = _validate_ctf_message(
+                    message, artifact_ids=artifact_ids, label=label
+                )
+                self.budget.consume(validated, label=label, decoder=True)
+                # A decoder or a preflight consumer must not mutate later replay.
+                yield _snapshot_parser_output_value(validated)
+        except Exception as error:
+            self.failure = error
+            raise
+        finally:
+            close = getattr(iterator, "close", None)
+            if callable(close):
+                close()
+
+    def ctf_messages(self, input_ordinal: int) -> Iterator[CtfMessage]:
+        try:
+            yield from self._preflight_messages(input_ordinal)
+        except Exception as error:
+            self.failure = error
+            raise
+
+    def _preflight_messages(self, input_ordinal: int) -> Iterator[CtfMessage]:
+        if not self.preflight:
+            raise IngestionError("package record reader is outside preflight")
+        if type(input_ordinal) is not int or not 0 <= input_ordinal < len(self.specs):
+            raise IngestionError("preflight references an unknown input ordinal")
+        if self.specs[input_ordinal].parser_kind is not InputParserKind.CTF:
+            raise IngestionError("preflight CTF records require a CTF input")
+        prefix = self.prefixes.setdefault(input_ordinal, [])
+        stream = self.streams.setdefault(input_ordinal, self._decode(input_ordinal))
+        index = 0
+        while self.preflight:
+            if index == len(prefix):
+                # Never accumulate an unbounded stream while discovering context.
+                try:
+                    message = next(stream)
+                except StopIteration:
+                    return
+                self.record_count += 1
+                self.byte_count += len(canonical_json(_json_value(message)).encode("utf-8"))
+                if self.record_count > self.budget.limits.max_preflight_records:
+                    raise IngestionError("package preflight exceeded the record replay limit")
+                if self.byte_count > self.budget.limits.max_preflight_bytes:
+                    raise IngestionError("package preflight exceeded the byte replay limit")
+                prefix.append(message)
+            yield prefix[index]
+            index += 1
+        raise IngestionError("package record reader is outside preflight")
+
+    def parse_messages(self, ordinal: int) -> Iterator[CtfMessage]:
+        yield from self.prefixes.pop(ordinal, ())
+        stream = self.streams.setdefault(ordinal, self._decode(ordinal))
+        # Closing a selective mapper's iterator must not close the decoder:
+        # core still validates its unconsumed tail before publishing success.
+        for message in stream:  # noqa: UP028 - yield from propagates mapper close()
+            yield message
+
+    def close(self) -> None:
+        self.preflight = False
+        try:
+            with ExitStack() as cleanup:
+                for stream in self.streams.values():
+                    close = getattr(stream, "close", None)
+                    if callable(close):
+                        cleanup.callback(close)
+        finally:
+            self.streams.clear()
+            self.prefixes.clear()
+
+
 class IngestionCoordinator:
     """Discover, dispatch, validate, and normalize one plug-in input."""
 
@@ -3091,7 +3250,7 @@ class IngestionCoordinator:
             output = plugin.describe()
             if type(output) is not PluginSchema:
                 raise IngestionError("describe() must return an exact PluginSchema")
-            schema = _snapshot_parser_output_value(output)
+            schema = _schema_snapshot(output)
             if type(schema) is not PluginSchema:
                 raise IngestionError("describe() must return an exact PluginSchema")
             budget.consume(schema, label="describe", output=False)
@@ -3222,6 +3381,10 @@ class IngestionCoordinator:
                         )
                     continue
                 assert type(output) is InputSpec
+                if output.package_context is not None:
+                    raise IngestionError(
+                        "InputSpec.package_context is assigned only by core preflight"
+                    )
                 if output.parser_kind is None:
                     raise IngestionError(
                         "core ingestion requires InputSpec.parser_kind"
@@ -3317,17 +3480,51 @@ class IngestionCoordinator:
         list[_ParsedSourceRecord],
         list[PluginDiagnostic],
     ]:
-        return _plugin_execution_boundary(
-            "parser output processing",
-            lambda: self._parse_outputs(
-                plugin,
-                reader,
-                specs,
-                schema_index=schema_index,
-                budget=budget,
-                initial_diagnostics=initial_diagnostics,
-            ),
+        diagnostics = list(initial_diagnostics)
+        records = _PackageRecords(
+            reader, tuple(specs), self.trace_decoder, budget, diagnostics
         )
+        try:
+            if plugin.manifest.supports(PluginCapability.PACKAGE_PREFLIGHT):
+                def prepare() -> tuple[InputSpec, ...]:
+                    hook = getattr(plugin.original, "preflight_package", None)
+                    if not callable(hook):
+                        raise IngestionError("package_preflight requires preflight_package()")
+                    context = hook(reader.inventory, reader, tuple(specs), records)
+                    if records.failure is not None:
+                        raise IngestionError("package preflight record access failed") from records.failure
+                    if type(context) is not PackageContext:
+                        raise IngestionError("preflight_package() must return PackageContext")
+                    budget.consume(context, label="preflight_package")
+                    context = _snapshot_parser_output_value(context, _normalize_enums=True)
+                    if not isinstance(context.values, Mapping):
+                        raise IngestionError("PackageContext.values must be a mapping")
+                    artifact_ids = {item.artifact_id for item in reader.inventory.artifacts}
+                    if type(context.evidence) is not tuple:
+                        raise IngestionError("PackageContext.evidence must be a tuple")
+                    for index, evidence in enumerate(context.evidence):
+                        _validate_evidence(
+                            evidence, artifact_ids=artifact_ids,
+                            label=f"preflight_package.evidence[{index}]",
+                        )
+                    return tuple(replace(spec, package_context=context) for spec in specs)
+
+                specs = _plugin_execution_boundary("package preflight", prepare)
+            records.preflight = False
+            return _plugin_execution_boundary(
+                "parser output processing",
+                lambda: self._parse_outputs(
+                    plugin,
+                    reader,
+                    specs,
+                    schema_index=schema_index,
+                    budget=budget,
+                    records=records,
+                    diagnostics=diagnostics,
+                ),
+            )
+        finally:
+            records.close()
 
     def _parse_outputs(
         self,
@@ -3337,7 +3534,8 @@ class IngestionCoordinator:
         *,
         schema_index: _SchemaIndex,
         budget: _IngestionBudget,
-        initial_diagnostics: Sequence[PluginDiagnostic] = (),
+        records: _PackageRecords,
+        diagnostics: list[PluginDiagnostic],
     ) -> tuple[
         list[SnapshotObservation],
         list[RelationshipObservation],
@@ -3351,7 +3549,6 @@ class IngestionCoordinator:
         collections: list[RelationshipCollectionObservation] = []
         events: list[DomainEvent] = []
         source_records: list[_ParsedSourceRecord] = []
-        diagnostics: list[PluginDiagnostic] = list(initial_diagnostics)
         output_count = 0
 
         def consume(
@@ -3481,69 +3678,13 @@ class IngestionCoordinator:
                 assert spec.parser_kind is InputParserKind.CTF
                 if self.trace_decoder is None:
                     raise IngestionError("CTF input requires a core TraceDecoder")
-
-                def decoded_messages(
-                    input_spec: InputSpec,
-                    decoder_input_ordinal: int = input_ordinal,
-                    decoder_reader: Any = scoped_reader,
-                ) -> Iterator[CtfMessage]:
-                    assert self.trace_decoder is not None
-                    decoder_iterator = iter(
-                        self.trace_decoder.iter_ctf(
-                            decoder_reader,
-                            input_spec,
-                        )
-                    )
-                    try:
-                        for decoder_ordinal, message in enumerate(decoder_iterator):
-                            label = (
-                                f"trace_decoder[{decoder_input_ordinal}:"
-                                f"{decoder_ordinal}]"
-                            )
-                            if type(message) is PluginDiagnostic:
-                                budget.consume(
-                                    message,
-                                    label=label,
-                                    decoder=True,
-                                )
-                                _validate_diagnostic(
-                                    message,
-                                    artifact_ids=set(input_spec.artifact_ids),
-                                    label=label,
-                                    expected_origin=(DiagnosticOrigin.CORE_DECODER),
-                                    expected_stage=(DiagnosticStage.TRACE_DECODE),
-                                )
-                                diagnostics.append(message)
-                                if not message.recoverable:
-                                    raise IngestionError(
-                                        "CTF decoder failed: "
-                                        f"{message.code}: "
-                                        f"{message.message}"
-                                    )
-                                continue
-                            validated = _validate_ctf_message(
-                                message,
-                                artifact_ids=set(input_spec.artifact_ids),
-                                label=label,
-                            )
-                            budget.consume(
-                                validated,
-                                label=label,
-                                decoder=True,
-                            )
-                            yield validated
-                    finally:
-                        close = getattr(decoder_iterator, "close", None)
-                        if callable(close):
-                            close()
-
                 consume(
                     spec,
                     input_ordinal,
                     plugin.parse(
                         InputParserKind.CTF,
                         spec,
-                        decoded_messages(spec),
+                        records.parse_messages(input_ordinal),
                     ),
                     (
                         DomainEvent,
@@ -3551,6 +3692,10 @@ class IngestionCoordinator:
                         PluginDiagnostic,
                     ),
                 )
+                if records.failure is not None:
+                    raise IngestionError("CTF decoder record access failed") from records.failure
+                for _message in records.parse_messages(input_ordinal):
+                    pass
             report_analysis_load(
                 AnalysisLoadStage.PARSING,
                 completed=input_ordinal + 1,
@@ -3787,6 +3932,13 @@ class InMemoryRevisionStore:
         # The coordinator result is a hand-off value, not a mutable backing
         # store. Detach it once here and detach every public read below.
         self._dataset = deepcopy(result.dataset)
+        identity = self._dataset.get("_ingestion", {})
+        if (
+            not isinstance(identity, Mapping)
+            or identity.get("revision_id") != result.revision_id
+            or identity.get("node_id") != result.node_id
+        ):
+            raise IngestionError("normalized dataset identity does not match its revision")
         self._revision = RevisionDescriptor(
             node_id=result.node_id,
             revision_id=result.revision_id,
@@ -3898,27 +4050,48 @@ class IngestedDatasetSource:
 
     def __init__(self, store: RevisionStore) -> None:
         self.store: RevisionStore = store
+        self._selected_revision: ContextVar[str | None] = ContextVar(
+            "ingested_selected_revision", default=None
+        )
 
-    def revision_scope(self, revision_id: str) -> Any:
-        self.store.revision(revision_id)
-        return nullcontext()
+    @contextmanager
+    def revision_scope(self, revision_id: str) -> Iterator[None]:
+        selected = self.store.revision(revision_id).revision_id
+        token = self._selected_revision.set(selected)
+        try:
+            yield
+        finally:
+            self._selected_revision.reset(token)
 
     def load_dataset(
         self,
         revision_id: str | None = None,
         **selection: Any,
     ) -> dict[str, Any]:
-        if selection:
-            node_id = selection.get("node_id")
-            if node_id is not None:
-                return dict(self.store.dataset_for_node(str(node_id)))
-        selected = revision_id or self.store.default_revision_id
-        return dict(self.store.dataset_for_revision(selected))
+        if set(selection) - {"node_id"}:
+            raise KeyError("unsupported revision selection")
+        selected = revision_id if revision_id is not None else self._selected_revision.get()
+        node_id = selection.get("node_id")
+        if node_id is not None:
+            node_revision = self.store.revision_for_node(node_id)
+            if selected is not None and selected != node_revision.revision_id:
+                raise IngestionError("node and revision selections disagree")
+            selected = node_revision.revision_id
+        if selected is None:
+            selected = self.store.default_revision_id
+        descriptor = self.store.revision(selected)
+        dataset = dict(self.store.dataset_for_revision(descriptor.revision_id))
+        if self.revision_id(dataset) != descriptor.revision_id:
+            raise IngestionError("loaded dataset does not match selected revision")
+        return dataset
 
     def revision_id(self, dataset: Mapping[str, Any]) -> str:
         metadata = dataset.get("_ingestion")
-        if isinstance(metadata, Mapping) and metadata.get("revision_id"):
-            return str(metadata["revision_id"])
+        if isinstance(metadata, Mapping) and type(metadata.get("revision_id")) is str:
+            descriptor = self.store.revision(metadata["revision_id"])
+            if metadata.get("node_id") != descriptor.node_id:
+                raise IngestionError("normalized dataset node does not match its revision")
+            return descriptor.revision_id
         raise IngestionError("normalized dataset lacks revision_id")
 
     def indexed_history(self, dataset: Mapping[str, Any]) -> None:
@@ -3928,16 +4101,32 @@ class IngestedDatasetSource:
 class IngestedDataPolicy:
     """Domain-neutral metadata policy for core-ingested revisions."""
 
-    def __init__(self, store: RevisionStore) -> None:
+    def __init__(
+        self, store: RevisionStore, *, source: IngestedDatasetSource | None = None
+    ) -> None:
+        if source is not None and source.store is not store:
+            raise ValueError("data policy and source must share the same revision store")
         self._store = store
+        self._source = source
         self._source_lock = RLock()
         self._source_by_event_uid: dict[str, dict[str, Any]] | None = None
+        self._source_revision_id: str | None = None
 
     def _source_records_by_event(self) -> dict[str, dict[str, Any]]:
+        revision_id = (
+            self._source._selected_revision.get()
+            if self._source is not None else None
+        ) or self._store.default_revision_id
         with self._source_lock:
-            if self._source_by_event_uid is None:
-                dataset = self._store.dataset_for_revision(
-                    self._store.default_revision_id
+            if self._source_by_event_uid is None or self._source_revision_id != revision_id:
+                selected_source = self._source
+                dataset = (
+                    _plugin_execution_boundary(
+                        "scoped source-record dataset loading",
+                        lambda: selected_source.load_dataset(revision_id),
+                    )
+                    if selected_source is not None
+                    else self._store.dataset_for_revision(revision_id)
                 )
                 index: dict[str, dict[str, Any]] = {}
                 for record in dataset.get("source_records", ()):
@@ -3949,6 +4138,7 @@ class IngestedDataPolicy:
                             deepcopy(dict(record)),
                         )
                 self._source_by_event_uid = index
+                self._source_revision_id = revision_id
             return self._source_by_event_uid
 
     def analysis_metadata(
@@ -4068,7 +4258,7 @@ class CoreIngestionRuntime:
         yield CoreIngestionSession(
             revision_store=store,
             data_source=source,
-            data_policy=IngestedDataPolicy(store),
+            data_policy=IngestedDataPolicy(store, source=source),
         )
 
 

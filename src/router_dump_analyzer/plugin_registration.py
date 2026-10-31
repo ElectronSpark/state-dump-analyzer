@@ -225,6 +225,8 @@ _INGESTION_LIMIT_BOOTSTRAP_FIELDS = (
     "max_parsed_outputs",
     "max_total_outputs",
     "max_decoder_outputs",
+    "max_preflight_records",
+    "max_preflight_bytes",
     "max_diagnostics",
     "max_evidence_items",
     "max_subject_references",

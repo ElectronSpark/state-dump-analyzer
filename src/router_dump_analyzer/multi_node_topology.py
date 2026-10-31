@@ -21,8 +21,6 @@ from typing import Any
 from urllib.parse import quote, urlencode
 from uuid import UUID
 
-from .cancellation import query_cancellation_checkpoint, query_checked
-
 from router_dump_analyzer.canonical import (
     CanonicalValueError,
     bounded_value_key,
@@ -80,6 +78,8 @@ from router_dump_analyzer.process_control import (
 from router_dump_analyzer.route_topology import (
     MultiNodeTopologyRequestError,
     RouteProjectionSelection,
+    TopologyProjectionProvider,
+    TopologyProjectionQuery,
 )
 from router_dump_analyzer.temporal_core import (
     RESOURCE_CREATION_OPERATIONS,
@@ -100,6 +100,8 @@ from router_dump_analyzer.topology_federation import (
     TopologyProjectionSelection,
 )
 from router_dump_analyzer.value_core import mutable_json_value, snapshot_json_value
+
+from .cancellation import query_cancellation_checkpoint, query_checked
 
 
 def _invoke_topology_projection_state_provider(
@@ -272,6 +274,7 @@ def _validated_plugin_semantics(
         descriptor = TopologyPluginSemanticsDescriptor(
             role=semantics.get("role"),
             coverage_complete=semantics.get("coverage_complete"),
+            participates_in_connectivity=semantics.get("participates_in_connectivity"),
         )
         _validated_topology_presentation(
             semantics.get("topology_presentation")
@@ -691,6 +694,7 @@ class MultiNodeTopologyService:
             ]
             | None
         ) = None,
+        projection_provider: TopologyProjectionProvider | None = None,
     ) -> None:
         if not isinstance(contract, dict) or not isinstance(
             contract.get("nodes"),
@@ -776,6 +780,9 @@ class MultiNodeTopologyService:
         self._topology_projection_state_provider = (
             topology_projection_state_provider
         )
+        if projection_provider is not None and not callable(projection_provider):
+            raise TypeError("projection_provider must be callable")
+        self._projection_provider = projection_provider
 
     @staticmethod
     def normalize_basis(
@@ -2306,6 +2313,85 @@ class MultiNodeTopologyService:
         context_id: str,
     ) -> dict[str, Any]:
         query_cancellation_checkpoint()
+        if self._projection_provider is not None:
+            query = TopologyProjectionQuery(
+                node_id=node["node_id"],
+                member_id=node["member_id"],
+                revision_id=node["revision_id"],
+                plugin_set_id=plugin_set_id,
+                plugin_id=plugin["plugin_id"],
+                projection_id=projection["projection_id"],
+                status_perspective_id=perspective_id,
+                context_id=context_id,
+                resolved_time=resolved_time,
+                requested_basis=requested_basis,
+            )
+            try:
+                facts = self._projection_provider(query)
+                fields = {
+                    "resources", "local_links", "connector_claims",
+                    "network_segment_claims",
+                }
+                if type(facts) is not dict or facts.keys() - fields:
+                    raise ValueError("projection provider must return only fact arrays")
+                total = 0
+                for name, rows in facts.items():
+                    if type(rows) not in (list, tuple):
+                        raise ValueError(f"projection provider {name} must be an array")
+                    total += len(rows)
+                if total > query.max_records:
+                    raise ValueError("projection provider record limit exceeded")
+                facts = validate_bounded_json_value(
+                    facts, "projection provider result",
+                    maximum_container_items=query.max_records,
+                    maximum_units=250_000,
+                    maximum_encoded_bytes=16 * 1024 * 1024,
+                    snapshot=True,
+                )
+                projection = {**projection, **facts}
+                resource_ids = set()
+                for row in query_checked(projection.get("resources", ())):
+                    identifier = _exact_nonempty_string(
+                        row.get("resource_id"), "resource_id",
+                    )
+                    if identifier in resource_ids:
+                        raise ValueError("projection provider resource identities must be unique")
+                    resource_ids.add(identifier)
+                    for name in ("kind", "label"):
+                        _exact_nonempty_string(row.get(name), f"resource.{name}")
+                for name, reference_fields in (
+                    ("local_links", ("source_resource_id", "target_resource_id")),
+                    ("connector_claims", ("resource_id",)),
+                    ("network_segment_claims", ("resource_id",)),
+                ):
+                    identifiers = set()
+                    for row in query_checked(projection.get(name, ())):
+                        required_ids = (
+                            ("link_id",) if name == "local_links" else ("matcher_id",)
+                        )
+                        for field in required_ids:
+                            identifier = _exact_nonempty_string(row.get(field), field)
+                            if name == "local_links":
+                                if identifier in identifiers:
+                                    raise ValueError("projection provider link identities must be unique")
+                                identifiers.add(identifier)
+                        if name != "local_links":
+                            key = "match_key" if name == "connector_claims" else "segment_key"
+                            if key not in row:
+                                raise ValueError(f"projection provider {name} requires {key}")
+                        if name == "connector_claims":
+                            _exact_nonempty_string(row.get("link_type"), "link_type")
+                        for field in reference_fields:
+                            if row.get(field) not in resource_ids:
+                                raise ValueError(f"projection provider {name} has an unknown {field}")
+            except _PROCESS_CONTROL_EXCEPTIONS:
+                raise
+            except BaseException as error:
+                query_cancellation_checkpoint()
+                raise MultiNodeTopologyRequestError(
+                    "query projection provider failed or returned invalid facts"
+                ) from error
+            query_cancellation_checkpoint()
         timestamp_value = (
             resolved_time.get("query_time_ns")
             if resolved_time.get("query_time_ns") is not None
@@ -4148,8 +4234,9 @@ class MultiNodeTopologyService:
                     "routing_scope": plugin_semantics.get("routing_scope"),
                     "address_family": plugin_semantics.get("address_family"),
                     "prefix": plugin_semantics.get("prefix"),
-                    "connectivity_enabled": plugin_semantics.get(
-                        "participates_in_connectivity"
+                    "connectivity_enabled": all(
+                        item.get("participates_in_connectivity") is True
+                        for item in semantic_variants
                     ),
                     "presentation_plane": plugin_semantics.get(
                         "presentation_group", "physical"

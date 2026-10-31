@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -908,6 +909,11 @@ class ControlPlaneTests(unittest.TestCase):
             revision.revision_id,
         )
         self.assertEqual(dataset["_ingestion"]["node_id"], "router-a")
+        self.assertEqual(dataset["_ingestion"]["revision_id"], revision.revision_id)
+        self.assertEqual(
+            dataset["_ingestion"]["source_revision_id"],
+            revision.metadata["source_revision_id"],
+        )
         dataset["events"].clear()
         reloaded = control.load_revision_dataset(
             scope,
@@ -1507,7 +1513,7 @@ class ControlPlaneTests(unittest.TestCase):
             scope,
             fixture_id=completed.fixture_id,
         )
-        dataset = control.load_revision_dataset(scope, revision.revision_id)
+        dataset = deepcopy(dict(control._load_revision(scope, revision.revision_id).dataset))
         execution_plan = revision.execution_plan
         assert execution_plan is not None
 
@@ -1639,7 +1645,7 @@ class ControlPlaneTests(unittest.TestCase):
             scope,
             fixture_id=completed.fixture_id,
         )
-        dataset = control.load_revision_dataset(scope, revision.revision_id)
+        dataset = deepcopy(dict(control._load_revision(scope, revision.revision_id).dataset))
         template = dataset["events"][0]
         assert isinstance(template, dict)
         late_invalid_events: list[object] = [dict(template) for _ in range(512)]

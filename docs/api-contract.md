@@ -13,6 +13,20 @@ operational guide is
 
 ## 1. Global rules
 
+Catalog-selected datasets expose the canonical catalog `revision_id` in
+`_ingestion`; `source_revision_id` preserves the retained source identity.
+Request-local revision scopes must agree with node and multi-node member
+selectors. A mismatched scope fails instead of using a default revision.
+
+Query-time topology extensions receive `TopologyProjectionQuery` and return
+bounded normalized fact arrays through `MultiNodeTopologyService`'s public
+`projection_provider` callback. `route_table_context_snapshot()` exposes the
+same immutable retained context used by trace validation. These are host APIs,
+not new HTTP endpoints or alternatives to provider identity checks. See the
+[extension contract](plugin-contract.md#query-projection-and-route-context).
+Unknown or incomplete terminal delivery remains unknown in route responses,
+including when a best-effort path reaches a displayed endpoint attachment.
+
 `GET /v1/revisions/{revision_id}/capabilities` separates producer `limitations`
 from core-owned `host_services`. The latter contains the booleans
 `control_plane_configured` and `request_identity_configured`, derived from the

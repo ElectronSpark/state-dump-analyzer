@@ -222,6 +222,7 @@ class PluginCapability(StrEnum):
     STATUS_PARSE = "status_parse"
     CTF_PARSE = "ctf_parse"
     TEXT_TRACE_PARSE = "text_trace_parse"
+    PACKAGE_PREFLIGHT = "package_preflight"
     EVENT_REDUCTION = "event_reduction"
     EVENT_REVERSION = "event_reversion"
     CORRELATION = "correlation"
@@ -252,6 +253,7 @@ PLUGIN_CAPABILITY_HOOKS: Mapping[PluginCapability, tuple[str, ...]] = MappingPro
         PluginCapability.STATUS_PARSE: ("parse_status",),
         PluginCapability.CTF_PARSE: ("parse_ctf",),
         PluginCapability.TEXT_TRACE_PARSE: ("parse_text_trace",),
+        PluginCapability.PACKAGE_PREFLIGHT: ("preflight_package",),
         PluginCapability.EVENT_REDUCTION: ("apply",),
         PluginCapability.EVENT_REVERSION: ("revert",),
         PluginCapability.CORRELATION: ("correlate",),
@@ -614,8 +616,15 @@ class TopologyPluginSemanticsDescriptor:
 
     role: TopologyDomainRole | str | None = None
     coverage_complete: bool | None = None
+    participates_in_connectivity: bool | None = None
 
     def __post_init__(self) -> None:
+        if self.participates_in_connectivity is not None:
+            strict_boolean(
+                self.participates_in_connectivity,
+                "topology connectivity participation",
+                message="topology participates_in_connectivity must be a boolean",
+            )
         if self.role is not None:
             role_text = (
                 self.role.value if type(self.role) is TopologyDomainRole else self.role
@@ -841,6 +850,10 @@ class PropertyDescriptor:
     indexed: bool = False
     sensitive: bool = False
     client_visible: bool = True
+    properties: tuple[PropertyDescriptor, ...] = ()
+    items: PropertyDescriptor | None = None
+    nullable: bool = True
+    validate_type: bool = False
 
     def __post_init__(self) -> None:
         _validate_dashboard_field(self.name, "property name")
@@ -852,9 +865,24 @@ class PropertyDescriptor:
             ("indexed", self.indexed),
             ("sensitive", self.sensitive),
             ("client_visible", self.client_visible),
+            ("nullable", self.nullable),
+            ("validate_type", self.validate_type),
         ):
             if not isinstance(value, bool):
                 raise ValueError(f"property {field_name} must be a boolean")
+        if type(self.properties) is not tuple or len(self.properties) > 1_024:
+            raise ValueError("nested properties must be a tuple of at most 1024 descriptors")
+        if any(type(item) is not PropertyDescriptor for item in self.properties):
+            raise ValueError("nested properties require exact PropertyDescriptor values")
+        if self.properties and self.value_type != "object":
+            raise ValueError("nested properties require the object value_type")
+        names = [item.name for item in self.properties]
+        if len(names) != len(set(names)) or any("." in name for name in names):
+            raise ValueError("nested property names must be unique direct field names")
+        if self.items is not None and (
+            type(self.items) is not PropertyDescriptor or self.value_type != "array"
+        ):
+            raise ValueError("property items requires an array and exact PropertyDescriptor")
 
 
 class IconRenderMode(StrEnum):
@@ -965,6 +993,8 @@ class ResourceKindDescriptor:
             raise ValueError("resource kind key fields must be unique")
         for field_name in self.key_fields:
             _validate_dashboard_field(field_name, "resource kind key field")
+        if (type(self.properties) is not tuple and type(self.properties) is not list) or len(self.properties) > 1_024:
+            raise ValueError("resource properties must be a bounded descriptor sequence")
         if any(
             not isinstance(descriptor, PropertyDescriptor)
             for descriptor in self.properties
@@ -975,6 +1005,27 @@ class ResourceKindDescriptor:
         property_names = [descriptor.name for descriptor in self.properties]
         if len(property_names) != len(set(property_names)):
             raise ValueError("resource kind property names must be unique")
+        paths: set[str] = set()
+        pending = [(item, "", 0) for item in self.properties]
+        queued = len(pending)
+        while pending:
+            item, prefix, depth = pending.pop()
+            if depth > 16 or len(paths) >= 4_096:
+                raise ValueError("resource property tree exceeds its validation budget")
+            path = prefix + item.name
+            if path in paths:
+                raise ValueError("resource kind property paths must be unique")
+            paths.add(path)
+            nested = item
+            while nested.items is not None:
+                depth += 1
+                if depth > 16:
+                    raise ValueError("resource property tree exceeds its validation budget")
+                nested = nested.items
+            queued += len(nested.properties)
+            if queued > 4_096:
+                raise ValueError("resource property tree exceeds its validation budget")
+            pending.extend((child, path + ".", depth + 1) for child in nested.properties)
         for label, fields in (
             ("default timeline", self.default_timeline_fields),
             ("display name", self.display_name_fields),
@@ -1809,6 +1860,7 @@ class InputSpec:
     logical_root: PurePosixPath | None = None
     options: Properties = field(default_factory=dict)
     parser_kind: InputParserKind | None = None
+    package_context: PackageContext | None = None
 
     def __post_init__(self) -> None:
         if self.parser_kind is not None:
@@ -1870,6 +1922,31 @@ class Evidence:
     raw_timestamp_ns: int | None
     clock_domain: str | None
     excerpt_sha256: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class PackageContext:
+    """Opaque plug-in-owned package/version facts resolved before parsing.
+
+    Core validates evidence against selected artifacts and deeply snapshots
+    ``values`` before placing the same immutable context on every InputSpec.
+    Version selection and ambiguity handling belong to the plug-in.
+    """
+
+    values: Properties = field(default_factory=dict)
+    evidence: tuple[Evidence, ...] = ()
+
+
+class PackageRecordReader(Protocol):
+    """Bounded access to decoded prefixes during package preflight.
+
+    ``input_ordinal`` addresses the tuple passed to ``preflight_package``.
+    Only CTF inputs are accepted. Repeated reads replay the same prefix; normal
+    parsing then replays it and continues the original decoder without decoding
+    records twice. The reader is valid only during this package's preflight.
+    """
+
+    def ctf_messages(self, input_ordinal: int) -> Iterable[CtfMessage]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -2540,6 +2617,8 @@ class CtfEventRecord:
     common_context: Properties = field(default_factory=dict)
     specific_context: Properties = field(default_factory=dict)
     evidence: tuple[Evidence, ...] = ()
+    packet_context: Properties = field(default_factory=dict)
+    decoder_metadata: Properties = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2551,6 +2630,7 @@ class CtfStreamBoundary:
     timestamp_ns: int | None
     clock_domain: str | None
     evidence: tuple[Evidence, ...] = ()
+    decoder_metadata: Properties = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2563,6 +2643,7 @@ class CtfPacketBoundary:
     timestamp_ns: int | None
     clock_domain: str | None
     evidence: tuple[Evidence, ...] = ()
+    decoder_metadata: Properties = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2575,6 +2656,7 @@ class CtfDiscardedEvents:
     end_timestamp_ns: int | None
     clock_domain: str | None
     evidence: tuple[Evidence, ...] = ()
+    decoder_metadata: Properties = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2587,6 +2669,7 @@ class CtfDiscardedPackets:
     end_timestamp_ns: int | None
     clock_domain: str | None
     evidence: tuple[Evidence, ...] = ()
+    decoder_metadata: Properties = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2598,6 +2681,7 @@ class CtfStreamActivityBoundary:
     timestamp_ns: int | None
     clock_domain: str | None
     evidence: tuple[Evidence, ...] = ()
+    decoder_metadata: Properties = field(default_factory=dict)
 
 
 type CtfMessage = (
@@ -5281,6 +5365,18 @@ class AnalyzerPluginBase:
             "locate_inputs() is required for every analyzer plugin"
         )
 
+    def preflight_package(
+        self,
+        inventory: DumpInventory,
+        reader: ArtifactReader,
+        inputs: tuple[InputSpec, ...],
+        records: PackageRecordReader,
+    ) -> PackageContext:
+        self._require_capability_override(
+            PluginCapability.PACKAGE_PREFLIGHT, "preflight_package"
+        )
+        return PackageContext()
+
     def parse_status(
         self,
         reader: ArtifactReader,
@@ -5419,6 +5515,14 @@ class AnalyzerPlugin(Protocol):
         self,
         inventory: DumpInventory,
     ) -> Iterable[InputSpec | PluginDiagnostic]: ...
+
+    def preflight_package(
+        self,
+        inventory: DumpInventory,
+        reader: ArtifactReader,
+        inputs: tuple[InputSpec, ...],
+        records: PackageRecordReader,
+    ) -> PackageContext: ...
 
     def parse_status(
         self,

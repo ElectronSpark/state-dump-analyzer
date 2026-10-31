@@ -16,6 +16,7 @@ import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from itertools import pairwise
+from types import MappingProxyType
 from typing import Any
 
 from router_dump_analyzer.load_progress import AnalysisLoadStage, _analysis_load_stage
@@ -95,6 +96,11 @@ class RouteServicePolicy:
     topology_link_matcher_id: str
     connectivity_domain_matcher_id: str
     data_disclosure: str = ""
+    allow_topology_inference: bool = True
+
+    def __post_init__(self) -> None:
+        if type(self.allow_topology_inference) is not bool:
+            raise ValueError("allow_topology_inference must be a boolean")
 
 
 class MultiNodeRouteService:
@@ -141,7 +147,7 @@ class MultiNodeRouteService:
                 "route policy scenario keys must match scenario_id: "
                 + ", ".join(sorted(invalid_scenario_keys))
             )
-        self._route_table_contexts: dict[str, dict[str, Any]] = {}
+        self._route_table_contexts: dict[str, Mapping[str, Any]] = {}
         self._generated_route_rows: list[dict[str, Any]] = []
         self._generated_forwarding_rows: list[dict[str, Any]] = []
         self._generated_packet_cases: list[dict[str, Any]] = []
@@ -1663,6 +1669,11 @@ class MultiNodeRouteService:
                 )
                 if not evidence_valid:
                     disposition = "unresolved"
+                if (
+                    disposition == "best_effort_inferred"
+                    and not self.policy.allow_topology_inference
+                ):
+                    disposition = "unresolved"
                 complete = matches and disposition != "unresolved"
                 segment["resource_refs"] = resource_refs
                 segment["node_id"] = node_id
@@ -1820,6 +1831,7 @@ class MultiNodeRouteService:
                 elif (
                     disposition == "unresolved"
                     and resolution_mode == "best_effort"
+                    and self.policy.allow_topology_inference
                 ):
                     complete = True
                     segment["segment_kind"] = "best_effort_bridge"
@@ -2008,7 +2020,10 @@ class MultiNodeRouteService:
                         existing_state["reason_code"] = (
                             "typed_boundary_operational_status_unknown"
                         )
-                        if resolution_mode == "strict":
+                        if (
+                            resolution_mode == "strict"
+                            or not self.policy.allow_topology_inference
+                        ):
                             boundary["completeness"] = {
                                 "state": "unresolved",
                                 "end_to_end_resolved": False,
@@ -5443,13 +5458,26 @@ class MultiNodeRouteService:
                 "opaque_row_trace_correlation": "core",
             },
         }
-        self._route_table_contexts[route_table_context_id] = {
+        self._route_table_contexts[route_table_context_id] = MappingProxyType({
             "topology_context_id": snapshot["context_id"],
-            "route_entry_ids": {item["route_entry_id"] for item in query_checked(rows)},
-        }
+            "route_entry_ids": frozenset(
+                item["route_entry_id"] for item in query_checked(rows)
+            ),
+        })
         while len(self._route_table_contexts) > 32:
             self._route_table_contexts.pop(next(iter(self._route_table_contexts)))
         return response
+
+    def route_table_context_snapshot(
+        self, context_id: str,
+    ) -> Mapping[str, Any] | None:
+        """Return the immutable context retained by ``route_tables``.
+
+        Results contain the exact topology_context_id and a frozenset of
+        route_entry_ids used for constant-time trace validation. Missing or
+        evicted contexts return None.
+        """
+        return self._route_table_contexts.get(context_id)
 
     @staticmethod
     def _bounded_page_integer(
@@ -5736,7 +5764,7 @@ class MultiNodeRouteService:
         )
         if route_table_context_id is not None:
             route_table_context_id = str(route_table_context_id)
-            table_context = self._route_table_contexts.get(route_table_context_id)
+            table_context = self.route_table_context_snapshot(route_table_context_id)
             if table_context is None:
                 raise MultiNodeRouteRequestError(
                     "unknown or expired route_table_context_id"
@@ -6455,6 +6483,7 @@ class MultiNodeRouteService:
                 consistency_state = (
                     "best_effort_with_gap"
                     if resolution_mode == "best_effort"
+                    and self.policy.allow_topology_inference
                     else "incomplete"
                 )
         if packet_executor_profile_id is not None:
@@ -7358,9 +7387,9 @@ class MultiNodeRouteService:
     ) -> None:
         """Project plug-in delivery decisions before core exact matching.
 
-        This method stands in for the participating node plug-ins.  The core
-        annotator below consumes only this normalized declaration; it does not
-        infer endpoint delivery from a path's final node.
+        Preserve explicit terminal declarations. Compatibility projections must
+        prove a delivered final local decision; a path ending on an attachment
+        is not by itself evidence of delivery.
         """
 
         declared_attachments_by_node = {
@@ -7371,11 +7400,13 @@ class MultiNodeRouteService:
         attachments_by_node = {
             str(item["node_id"]): dict(item)
             for item in target_endpoint.get("attachments", [])
-            if item.get("can_terminate", True)
-            and item.get("state") not in {"withdrawn", "unavailable"}
+            if item.get("can_terminate") is True
+            and item.get("state") == "available"
             and item.get("node_id")
         }
         for path in paths:
+            if "plugin_terminal" in path:
+                continue
             sequence = [
                 str(item) for item in path.get("node_sequence", []) if item
             ]
@@ -7391,11 +7422,24 @@ class MultiNodeRouteService:
             )
             forwarding_capable = path.get("forwarding_capable", True) is not False
             result = str(path.get("result", "unknown"))
+            terminal_step = next(
+                (
+                    item for item in reversed(path.get("segments", []))
+                    if item.get("node_id") == terminal_node_id
+                ),
+                {},
+            )
+            terminal_delivered = (
+                terminal_step.get("generated_forwarding_state", {}).get("disposition")
+                == "delivered"
+                and terminal_step.get("completeness", {}).get("observed") is True
+            )
             if (
                 resolved
                 and forwarding_capable
                 and result == "resolved"
                 and target_attachment is not None
+                and terminal_delivered
             ):
                 declaration = {
                     "classification": "delivered",
@@ -7433,6 +7477,7 @@ class MultiNodeRouteService:
                 and forwarding_capable
                 and result == "resolved"
                 and target_endpoint.get("attachments_complete") is True
+                and declared_attachment is None
             ):
                 declaration = {
                     "classification": "not_delivered",
@@ -7473,8 +7518,8 @@ class MultiNodeRouteService:
         target_attachments = [
             dict(item)
             for item in target_endpoint.get("attachments", [])
-            if item.get("can_terminate", True)
-            and item.get("state") not in {"withdrawn", "unavailable"}
+            if item.get("can_terminate") is True
+            and item.get("state") == "available"
         ]
         target_attachment_identities = {
             cls._attachment_identity(
@@ -7551,7 +7596,7 @@ class MultiNodeRouteService:
             )
             exact_match = endpoint_matches and attachment_matches
             if classification == "delivered":
-                if exact_match and end_to_end_resolved:
+                if exact_match and end_to_end_resolved and classification_complete:
                     reaches_target: bool | None = True
                 elif classification_complete and attachments_complete:
                     reaches_target = False

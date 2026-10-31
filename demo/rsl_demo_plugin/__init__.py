@@ -1413,24 +1413,28 @@ def _interface_schema() -> PluginSchema:
                         name="name",
                         label="Name",
                         value_type="string",
+                        validate_type=True,
                         searchable=True,
                     ),
                     PropertyDescriptor(
                         name="admin_status",
                         label="Admin status",
                         value_type="string",
+                        validate_type=True,
                         indexed=True,
                     ),
                     PropertyDescriptor(
                         name="oper_status",
                         label="Operational status",
                         value_type="string",
+                        validate_type=True,
                         indexed=True,
                     ),
                     PropertyDescriptor(
                         name="description",
                         label="Description",
                         value_type="string",
+                        validate_type=True,
                         # Dotted names can select nested searchable leaves;
                         # core applies visibility before building search text.
                         searchable=True,

@@ -7,6 +7,18 @@ the production server and isolated analysis workers target Linux
 
 ## 1. Executive decision
 
+The implemented core includes an optional subprocess Babeltrace decoder,
+package-local immutable preflight/replay, bounded nested schemas and large
+source-record catalogs, callable query projections and public route contexts.
+Device versions, event interpretation, connectivity participation and terminal
+delivery remain plug-in declarations. Decoder configuration and quotas belong
+to the host. Catalog revision IDs identify request-local dataset views; source
+IDs continue to identify retained bytes and execution-plan basis. The
+[normative extension contract](plugin-contract.md#vendor-neutral-schema-and-query-extensions)
+and [synthetic checks](plugin-api-validation.md#run-a-check) describe the shipped
+boundaries. Babeltrace bindings remain a separately installed native dependency;
+the bounded decoder subprocess does not provide a full production sandbox.
+
 The distributed-production target starts as a modular monolith with isolated
 workers, not as microservices and not as a graph-database product. The shipped
 single-host profile uses the same modular boundary: queue coordination remains

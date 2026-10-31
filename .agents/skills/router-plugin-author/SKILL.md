@@ -35,7 +35,7 @@ before changing plug-in semantics.
 
 ## Implement the requested semantics
 
-- Subclass `AnalyzerPluginBase`, supply `manifest`, and implement `describe`,
+- Use `AnalyzerPluginBase` or a plain protocol object, supply `manifest`, and implement `describe`,
   `probe`, and `locate_inputs`. Declare only capabilities you implement. For
   parser inputs, select `InputParserKind` explicitly and read selected artifacts
   through `ArtifactReader`. A capability-only provider can return no inputs;
@@ -43,6 +43,13 @@ before changing plug-in semantics.
 - Declare every emitted source-record type in `PluginSchema.source_record_types`
   with `SourceRecordTypeDescriptor`; a source label alone is not a declaration.
   Bound reads before allocating input, and test malformed or oversized records.
+- For CTF/version preflight, typed nested schemas, query projections, inference
+  restrictions or revision scopes, read the [core extension checks](../../../docs/plugin-api-validation.md#run-a-check).
+  Preflight version decisions belong in `PackageContext`, not mutable plug-in
+  instance state. Reuse `PackageRecordReader` rather than decoding twice. Hosts
+  configure native Babeltrace; parsers consume dependency-free CTF records.
+  Use the public projection callback and route-context getter, and preserve
+  unknown terminal delivery instead of inferring it from the final node.
 - Keep typed `ResourceKey` identity, stable event/source identities, retained
   evidence, and unknown/absent time semantics. Follow the teaching golden tests
   for the output types; do not invent timestamps or turn unknown state into absence.

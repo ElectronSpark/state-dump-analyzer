@@ -3470,9 +3470,20 @@ class ControlPlane:
         scope: ReviewScope,
         revision_id: str,
     ) -> dict[str, Any]:
-        """Load and verify one catalog revision, returning a detached value."""
+        """Load a detached dataset addressed by its canonical catalog revision.
 
-        return deepcopy(dict(self._load_revision(scope, revision_id).dataset))
+        Retained bytes and execution plans keep their source revision identity;
+        the public projection exposes that provenance separately.
+        """
+
+        loaded = self._load_revision(scope, revision_id)
+        dataset = deepcopy(dict(loaded.dataset))
+        dataset["_ingestion"]["source_revision_id"] = loaded.descriptor.metadata[
+            "source_revision_id"
+        ]
+        dataset["_ingestion"]["revision_id"] = loaded.descriptor.revision_id
+        dataset["_ingestion"]["node_id"] = loaded.descriptor.node_id
+        return dataset
 
     def list_revision_consistency_findings(
         self,

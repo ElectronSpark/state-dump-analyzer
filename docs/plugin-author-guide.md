@@ -10,6 +10,25 @@ supporting protocol, and combined workflow's conformance group. The repository
 authoring and validation skills linked there load only the relevant contract
 sections.
 
+For package-wide version selection, implement the optional `PACKAGE_PREFLIGHT`
+hook and read its immutable result from `InputSpec.package_context`. Use
+`PackageRecordReader` for a bounded decoded CTF prefix, rather than decoding
+again or storing version state on a shared plug-in instance. The
+[preflight contract](plugin-contract.md#package-preflight) defines call order,
+replay quotas and failure behavior. The host configures `BabeltraceTraceDecoder`
+and pins its deployment identity; a parser never imports native `bt2` objects.
+
+For nested state, extend `PropertyDescriptor` with object `properties` or array
+`items`; use `validate_type=True` for scalar checks. The runnable teaching
+schema opts its string properties into validation. Nested search and privacy
+flags are exercised in `tests.test_scalable_schemas`. The
+[schema and query extension contract](plugin-contract.md#vendor-neutral-schema-and-query-extensions)
+also covers large catalogs, callable query projections, public route-table
+context lookup, inference vetoes and canonical revision scopes. Plain objects
+implementing the protocol are supported; `AnalyzerPluginBase` is a convenience.
+Run the [synthetic extension suite](plugin-api-validation.md#run-a-check) before
+integrating a new device's semantics.
+
 ## What this guide produces
 
 The example plug-in:
@@ -2140,8 +2159,9 @@ The archive is deliberately compact. Its status member executes through the
 current example parser and core ingestion coordinator. It also carries text,
 CTF, malformed, unsupported, identity, relationship, and uncertainty vectors
 with an `execution_stage`/`support` label. Those labels are normative: this
-repository does **not** claim a built-in CTF decoder, and the CTF cases require
-an explicitly supplied core `TraceDecoder`.
+CTF cases require an explicitly supplied core `TraceDecoder`. The optional
+`BabeltraceTraceDecoder` uses a configured interpreter with official `bt2`
+bindings; native conformance is separate from the ordinary status smoke test.
 
 The generic validator checks:
 

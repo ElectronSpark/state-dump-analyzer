@@ -578,7 +578,7 @@ plug-in.
 | Probe | Detect platform/version from safe inventory metadata and return a structured probe report. | Run every allowed probe with limits and resolve ambiguity explicitly. |
 | Locate | Select logical artifacts/parser roles or emit structured missing-input diagnostics. | Materialize only those artifacts into a private workspace. |
 | Status parse | Yield resource and relationship observations, scoped completeness markers, retained `SourceRecordEmission` values, and precise evidence locators. | Batch validation, source-record identity assignment, storage, diagnostics. |
-| Trace parse | Map dependency-free core CTF records or raw text into domain events and retained `SourceRecordEmission` values. | When configured, own the `TraceDecoder`, normalize native messages, retain raw time/source order, enforce quotas, and persist decoder diagnostics. The current runtime ships no built-in CTF decoder. |
+| Trace parse | Map dependency-free core CTF records or raw text into domain events and retained `SourceRecordEmission` values. | When configured, own the `TraceDecoder`, normalize native messages, retain raw time/source order, enforce quotas, and persist decoder diagnostics. `BabeltraceTraceDecoder` is available as an explicitly configured native decoder. |
 | Source-record presentation | Declare source-group metadata, source-type labels/colors/group membership, and optional regex-lane presets; link decoded records to domain events when normalization succeeds. | Validate group/type references, retain matched and unmatched timestamped records, assign stable IDs, validate regexes, page/query records, and implement generic timeline/log navigation. |
 | Reduce | Convert one event into all direct/derived state and edge changes. | Validate bounded `ChangeSet` output and world reads; an explicitly configured host owns replay ordering, interval materialization, and checkpoint scheduling. |
 | Revert | Invert an event when information permits; otherwise return explicit unknowns and coverage. | Validate inverse/unknown changes and coverage; an explicitly configured host owns reverse replay and materializes the returned uncertainty. |
@@ -1146,9 +1146,49 @@ use `parse_ctf(spec, messages)`; text-log roles use the separate
 The current core-owned runtime-v2 constructor does not install a decoder;
 selecting a CTF `InputSpec` without one fails closed with
 `CTF input requires a core TraceDecoder`.
+The host may supply `BabeltraceTraceDecoder(BabeltraceDecoderConfiguration(...))`
+from `router_dump_analyzer.trace_decoder`. Configuration selects the Python
+interpreter containing official Babeltrace 2 bindings and sets process memory,
+wall-time, message, frame, output, metadata and field limits. Input options MUST
+NOT override these host limits. The decoder uses the core's selected private
+artifact tree; native objects and archive-provided code never cross the boundary.
+Failures raise `TraceDecodeError` with an explicit `CTF_*` code, including missing
+dependencies, malformed input, unsupported native types, quota exhaustion and
+cancellation. Cancellation and iterator close terminate and reap the worker.
+Event records include `packet_context`; all CTF records can carry
+`decoder_metadata` for native field types and raw clock coordinates. CTF metadata
+is retained as artifact evidence, with its digest and declared byte orders.
+Babeltrace normalizes storage order, so clients MUST NOT mistake a trace-level
+byte-order declaration for an invented per-field order. Discarded event/packet
+messages remain explicit records even when their counts or times are unknown.
 Mapped `DomainEvent` records retain the core `SourceRecordRef` (source, trace,
 stream, packet, and message ordinal); a plugin must not hide source identity only
 inside a human locator.
+
+#### Package preflight
+
+`PACKAGE_PREFLIGHT` advertises the optional
+`preflight_package(inventory, reader, inputs, records) -> PackageContext` hook.
+Core calls it exactly once after input discovery and before any parser handler.
+The plug-in resolves version/platform ambiguity using package evidence; core
+does not choose a vendor version or guess from filenames. A raised error aborts
+ingestion before publication. Core validates context evidence against inventory,
+deeply detaches its opaque `values`, and assigns the same immutable context to
+each handler's `InputSpec.package_context`. Locator-supplied context is rejected.
+
+`PackageRecordReader.ctf_messages(input_ordinal)` reads a selected CTF prefix.
+The ordinal refers to the immutable inputs tuple. Repeated preflight reads and
+later `parse_ctf` replay the same validated records, then continue the original
+decoder iterator. No record is decoded or charged twice. Replay limits apply
+across the package. After a CTF mapper returns, core drains the same
+selected decoder stream so malformed trailing data and discarded notices still
+cross validation; it does not invoke the mapper again. Default replay limits
+are 4,096 messages and 16 MiB; ordinary decoder/aggregate limits still apply.
+An invalid reference or replay-limit failure aborts even if the plug-in catches
+the reader exception. Records/readers and context are package-local, including
+concurrent ingestion; a reader cannot be used after preflight ends. Legacy
+parsers without the capability retain their existing signatures and receive no
+package context.
 
 The core may retain timestamped or window-only decoder input as a generic `SourceRecord`,
 including CTF messages, syslog lines, agent callbacks, and records decoded from
@@ -2515,8 +2555,9 @@ network/secrets/database socket/host paths, and CPU, memory, file,
 child-process, output, inode, and wall-time limits. Native Babeltrace failures
 must terminate only that worker. The shipped child-process boundary supplies
 kill/reap and a wall deadline but not those sandbox/resource controls; a
-built-in/default CTF decoder is also not implemented by the current
-runtime-v2 slice.
+default CTF decoder is not installed by runtime-v2. The optional
+`BabeltraceTraceDecoder` supplies native-process memory, output, and wall-time
+limits; it does not replace deployment sandboxing.
 
 `ArtifactReader.materialize_private_path()` supports a single native input;
 `materialize_private_tree()` reconstructs a selected logical subtree for
@@ -3241,7 +3282,8 @@ Its embedded and standalone semantic vectors label each case by current
 execution stage. The current status slice is executable through the example
 parser and coordinator. Text, CTF, malformed, unsupported, typed-key,
 relationship, and uncertainty cases remain explicit without claiming a
-built-in CTF decoder or an unimplemented provider.
+automatic CTF execution or an unimplemented provider. Native CTF decoding has
+its own synthetic conformance suite and requires a configured `bt2` interpreter.
 
 ### Compatibility runtime adapter
 
@@ -3266,3 +3308,72 @@ uses the core request-bound gateway and retained provider identities; it does
 not call device hooks directly or grant workspace disclosure. Projected
 correspondences shown in durable inspection remain revision-scoped assertions,
 not new temporal relationship observations or merged resource identities.
+
+## Vendor-neutral schema and query extensions
+
+### Typed properties and large catalogs
+
+`PropertyDescriptor` accepts nested `properties` for `value_type="object"` and
+an `items` descriptor for `value_type="array"`. Child names are direct field
+names; the item descriptor's name does not add a path component. Nested shapes
+validate supplied child fields recursively, including dotted patches. Unknown
+children, duplicate paths, scalar traversal and wrong types fail at ingestion
+and reducer-executor boundaries. Missing fields remain valid for partial patches.
+`nullable=False` rejects an explicit null; `validate_type=True` opts a scalar
+descriptor into checks. Built-in structural types are `string`, `integer`,
+`number`, `boolean`, `bytes`, `object`, and `array`; a boolean is not an integer.
+Other type names remain opaque semantic labels. Existing descriptors without
+these opt-ins retain their advisory type behavior.
+
+Searchable and sensitive/client-visible flags also apply to nested leaves,
+including arrays of objects. Search projection MUST apply visibility before
+indexing text. A private parent hides its descendants. Property trees are
+bounded to 4,096 paths; per-record depth, count and value limits remain in force.
+
+Schema identity and snapshots use separate budgets: at most 65,536 declared
+`source_record_types`, 1,024 items in other containers, 16 container levels,
+2,000,000 total value units and 32 MiB of string/byte data. Oversized atoms,
+cycles and non-finite floats remain invalid. The catalog is indexed once for
+membership checks; increasing its capacity does not relax emission limits.
+All schema fields, including nested typing and visibility, contribute to the
+execution-plan schema digest.
+
+### Query projection and route context
+
+Hosts can pass a callable `projection_provider` to `MultiNodeTopologyService`.
+It receives a frozen `TopologyProjectionQuery` from `route_topology`, with exact
+member/node/revision/plugin-set/plugin/projection/perspective identities,
+resolved time, requested basis and a record budget. It returns only normalized
+`resources`, `local_links`, `connector_claims`, and `network_segment_claims`;
+omitted collections retain their declaration. Core validates counts, JSON
+bounds and local references before rendering. The callback cannot replace core
+identity or declaration metadata. The existing typed `project_topology` hook
+continues through the pinned capability executor; subclassing a core service or
+reading its private stores is unnecessary.
+
+`MultiNodeRouteService.route_tables()` creates a retained context.
+`route_table_context_snapshot(id)` returns its immutable topology-context ID
+and frozenset of admitted route-entry IDs, or `None` when missing/evicted.
+The getter and trace validation share the same bounded cache and do not rescan
+route rows. Callers must handle eviction instead of writing private dictionaries.
+
+`RouteServicePolicy.allow_topology_inference=False` vetoes best-effort topology
+inference. A claim's `TopologyPluginSemanticsDescriptor.participates_in_connectivity=False`
+excludes it from connectivity inference without hiding its presentation.
+Neither a path ending at an attachment nor an unknown/incomplete delivery
+classification establishes reachability. Confirmed delivery requires a complete
+positive terminal declaration and an exact available, terminating attachment.
+
+### Canonical revision selection
+
+Public catalog reads and request-local selected stores expose the canonical
+catalog `revision_id`; retained source identity is preserved separately as
+`source_revision_id`. Content bytes and execution-plan source basis are not
+rewritten. `IngestedDatasetSource.revision_scope()` scopes the selected revision
+per context, restores outer selections, and rejects inconsistent node/revision
+pairs or store/dataset identities. Concurrent multi-node requests MUST NOT
+change a shared default revision or silently fall back to another revision.
+When pairing a multi-revision source with `IngestedDataPolicy`, pass that same
+source via `IngestedDataPolicy(store, source=source)` so source-evidence lookup
+uses the selected revision too. The evidence cache retains only one revision's
+index; equal event IDs in another revision cannot reuse its record.

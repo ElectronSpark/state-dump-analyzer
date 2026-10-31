@@ -3562,7 +3562,10 @@ class MultiNodeRouteTests(unittest.TestCase):
         strict_payload = strict.json()
         best_payload = best.json()
         self.assertFalse(strict_payload["reachable"])
-        self.assertTrue(best_payload["reachable"])
+        # The fixture has an unresolved final decision as well as a missing
+        # intermediate step. Provisional joins cannot prove terminal delivery.
+        self.assertFalse(best_payload["reachable"])
+        self.assertIsNone(best_payload["endpoint_reachability"]["reaches_target"])
         strict_middle = next(
             segment
             for segment in strict_payload["paths"][0]["segments"]
@@ -3967,9 +3970,17 @@ class MultiNodeRouteTests(unittest.TestCase):
         local_segments = [
             segment
             for segment in control["segments"]
-            if segment["segment_kind"] == "node_resolution"
+            if segment["node_id"] is not None
         ]
         self.assertEqual(len(local_segments), 3)
+        omitted_step = next(
+            segment
+            for segment in local_segments
+            if segment["node_id"] == "transit-p-2"
+        )
+        self.assertEqual(omitted_step["segment_kind"], "unresolved")
+        self.assertEqual(omitted_step["completeness"]["state"], "unresolved")
+        self.assertFalse(omitted_step["completeness"]["end_to_end_resolved"])
         unresolved_boundaries = [
             segment
             for segment in control["segments"]

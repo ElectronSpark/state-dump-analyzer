@@ -95,6 +95,7 @@ class _SchemaIndex:
     perspectives: frozenset[str]
     topology_perspectives: Mapping[str, frozenset[str]]
     connector_match_policies: Mapping[str, ConnectorMatchPolicyDescriptor]
+    properties_by_kind: Mapping[str, tuple[Any, ...]]
     @classmethod
     def build(cls, schema: PluginSchema) -> _SchemaIndex: ...
 

@@ -216,7 +216,24 @@ class _SelectedStore:
     """Request-local, single-revision adapter; no global default changes."""
 
     def __init__(self, dataset: dict[str, Any], member: dict[str, Any]) -> None:
-        self.dataset: dict[str, Any] = dataset
+        # Persisted bytes retain their content/source identity. The request-local
+        # store addresses the catalog revision, so expose that canonical identity
+        # consistently to generic data services without mutating retained bytes.
+        metadata = dataset.get("_ingestion")
+        if not isinstance(metadata, Mapping) or metadata.get("node_id", metadata.get("node")) != member["node_id"]:
+            raise DatasetIntegrityError("dataset node does not match selected revision")
+        source_revision_id = metadata.get("revision_id")
+        if type(source_revision_id) is not str or not source_revision_id:
+            raise DatasetIntegrityError("dataset lacks source revision identity")
+        self.dataset: dict[str, Any] = {
+            **dataset,
+            "_ingestion": {
+                **metadata,
+                "source_revision_id": metadata.get("source_revision_id", source_revision_id),
+                "revision_id": member["revision_id"],
+                "node_id": member["node_id"],
+            },
+        }
         self.descriptor: RevisionDescriptor = RevisionDescriptor(
             node_id=member["node_id"],
             revision_id=member["revision_id"],
@@ -566,9 +583,8 @@ def _section_rows(
     elif query.section == "relationships":
         # The embedded-history path already enforces lifecycle and interval
         # precedence; do not replace it with inferred topology or route edges.
-        service = NormalizedDataService(
-            IngestedDatasetSource(store), IngestedDataPolicy(store)
-        )
+        source = IngestedDatasetSource(store)
+        service = NormalizedDataService(source, IngestedDataPolicy(store, source=source))
         # Durable loading has already validated the projection fragment through
         # ControlPlane._relationship_projection_index. These are revision-basis
         # claims, not intervals: keep them in a separate record kind rather than

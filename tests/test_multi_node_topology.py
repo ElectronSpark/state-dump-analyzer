@@ -2325,7 +2325,7 @@ class MultiNodeTopologyTests(unittest.TestCase):
             "External stub",
             "standby / inactive",
             "dead / dropped",
-            "VPN context",
+            "service context",
         ):
             self.assertIn(label, page.text)
 

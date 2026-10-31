@@ -79,6 +79,13 @@ unsupported values yield a recoverable `demo.invalid-status-record` diagnostic
 with line evidence, and parsing continues at the next row. Unexpected parser
 implementation exceptions are not blanket-classified as malformed input.
 
+The teaching schema additionally opts its string properties into core type
+validation with `PropertyDescriptor.validate_type=True`. Nested object/array
+properties, large catalogs, preflight version selection and query callbacks are
+exercised by the [synthetic core extension suite](../docs/plugin-api-validation.md#run-a-check).
+Those tests include ordinary protocol objects; inheriting `AnalyzerPluginBase`
+is convenient for this teaching slice, but is not a runtime requirement.
+
 The distribution uses the collision-resistant import packages
 `rsl_demo_plugin` and `rsl_demo_generator`. It deliberately does not publish
 generic top-level packages named `plugin` or `generator`, which are likely to

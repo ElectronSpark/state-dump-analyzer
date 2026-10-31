@@ -2,9 +2,27 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-__all__ = ['MultiNodeTopologyRequestError', 'RouteProjectionSelection', 'RouteTopologyAccess']
+__all__ = ['MultiNodeTopologyRequestError', 'TopologyProjectionQuery', 'TopologyProjectionProvider', 'RouteProjectionSelection', 'RouteTopologyAccess']
 
 class MultiNodeTopologyRequestError(ValueError): ...
+
+@dataclass(frozen=True, slots=True)
+class TopologyProjectionQuery:
+    node_id: str
+    member_id: str
+    revision_id: str
+    plugin_set_id: str
+    plugin_id: str
+    projection_id: str
+    status_perspective_id: str
+    context_id: str
+    resolved_time: Mapping[str, Any]
+    requested_basis: Mapping[str, Any]
+    max_records: int = ...
+    def __post_init__(self) -> None: ...
+
+class TopologyProjectionProvider(Protocol):
+    def __call__(self, query: TopologyProjectionQuery) -> dict[str, Any]: ...
 
 @dataclass(frozen=True, slots=True)
 class RouteProjectionSelection:

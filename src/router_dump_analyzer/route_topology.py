@@ -11,9 +11,60 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from .value_core import snapshot_json_value
+
 
 class MultiNodeTopologyRequestError(ValueError):
     """A multi-node request cannot be executed by the advertised providers."""
+
+
+@dataclass(frozen=True, slots=True)
+class TopologyProjectionQuery:
+    """Resolved, immutable scope for one query-time normalized projection.
+
+    A provider returns only resources, local_links, connector_claims and/or
+    network_segment_claims. Omitted arrays retain the static declaration.
+    The core retains identity, status policy, bounded rendering and joining.
+    """
+
+    node_id: str
+    member_id: str
+    revision_id: str
+    plugin_set_id: str
+    plugin_id: str
+    projection_id: str
+    status_perspective_id: str
+    context_id: str
+    resolved_time: Mapping[str, Any]
+    requested_basis: Mapping[str, Any]
+    max_records: int = 10_000
+
+    def __post_init__(self) -> None:
+        for name in (
+            "node_id",
+            "member_id",
+            "revision_id",
+            "plugin_set_id",
+            "plugin_id",
+            "projection_id",
+            "status_perspective_id",
+            "context_id",
+        ):
+            value = getattr(self, name)
+            if type(value) is not str or not value or len(value) > 512:
+                raise ValueError(f"{name} must be a non-empty bounded string")
+        if type(self.max_records) is not int or not 1 <= self.max_records <= 100_000:
+            raise ValueError("max_records must be between 1 and 100000")
+        for name in ("resolved_time", "requested_basis"):
+            if not isinstance(getattr(self, name), Mapping):
+                raise TypeError(f"{name} must be a mapping")
+            object.__setattr__(self, name, snapshot_json_value(getattr(self, name)))
+
+
+class TopologyProjectionProvider(Protocol):
+    """Callable extension; no service subclass or access to private stores."""
+
+    def __call__(self, query: TopologyProjectionQuery) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,4 +137,6 @@ __all__ = [
     "MultiNodeTopologyRequestError",
     "RouteProjectionSelection",
     "RouteTopologyAccess",
+    "TopologyProjectionProvider",
+    "TopologyProjectionQuery",
 ]

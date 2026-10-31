@@ -14,6 +14,26 @@ GPT-6.1 Sol; they do not set the application's AI provider or model.
 
 ## Run a check
 
+For native CTF, package preflight, typed schemas, query projections, inference
+restrictions and canonical revision selection, use the
+[vendor-neutral extensions contract](plugin-contract.md#vendor-neutral-schema-and-query-extensions)
+and this synthetic boundary suite:
+
+```text
+python -m unittest tests.test_trace_decoder tests.test_package_preflight tests.test_scalable_schemas tests.test_query_projection_extensions tests.test_canonical_revision_identity -v
+```
+
+`test_trace_decoder` runs native little/big-endian, clock, discarded-record and
+malformed/limit vectors when the configured interpreter has official `bt2`
+bindings; otherwise those native cases skip explicitly. Mocked worker/error
+tests still run and do not establish native decoding. The optional
+`RSL_BABELTRACE_PYTHON` environment variable selects a separate interpreter for
+native decoder tests; it must execute the bridge and import `bt2`. Package tests prove
+ambiguous version rejection, one decoder pass, bounded replay, invalid evidence
+and concurrent isolation. Query tests cover a plain callable and a plain
+protocol plug-in through the actual pinned topology executor. Schema tests
+cross ingestion, reducer validation, search/redaction and a 10,001-type catalog.
+
 From the repository root, use the same Python 3.12 environment for installation,
 the validator, and tests:
 
@@ -27,7 +47,7 @@ python scripts/check_plugin_conformance.py --group combined
 
 `--list` checks that all required and capability-gated `AnalyzerPlugin` hooks,
 all `PluginCapability` members, and the public protocols in `plugin_api.py`,
-`runtime.py`, and `normalized_data.py` have a group. It also checks that named
+`runtime.py`, `normalized_data.py`, and `route_topology.py` have a group. It also checks that named
 test modules exist. This is declaration coverage, not proof that each method,
 descriptor field, failure mode, or combination is behaviorally covered.
 

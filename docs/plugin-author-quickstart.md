@@ -100,6 +100,14 @@ evidence with `SourceRecordEmission`, and use `derive_event_uid` for event
 identity. Choose timestamp semantics that match your device. Each behavior is
 exercised by the example's tests.
 
+The teaching schema uses `PropertyDescriptor(validate_type=True)` for its
+string properties. For nested properties, CTF decoding, package-wide version
+preflight or query-time projections, follow the
+[extension walkthrough](plugin-author-guide.md) and run the
+[synthetic extension checks](plugin-api-validation.md#run-a-check). Keep device
+version rules and delivery decisions in your plug-in; use core's immutable
+context and public service hooks rather than shared mutable state/private stores.
+
 The generated corpus policy, scenario builders, archive adapter, and fixture
 generator are separate demo concerns. Copy only the teaching slice described
 above. See the [detailed implementation walkthrough](plugin-author-guide.md#3-implement-the-parser-and-revision-analysis)

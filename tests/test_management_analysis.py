@@ -39,6 +39,7 @@ def _dataset(label="visible-port"):
     return {
         "_ingestion": {
             "revision_id": "source-revision",
+            "node_id": "same-node",
             "timeline_start_ns": "100",
             "timeline_end_ns": "200",
             "host_path": "C:/PRIVATE/store",

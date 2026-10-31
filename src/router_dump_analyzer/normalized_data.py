@@ -624,11 +624,43 @@ def descriptor_property_rules(
 ) -> dict[str, Mapping[str, Any]]:
     if not descriptor:
         return {}
-    return {
-        str(item["name"]): item
-        for item in descriptor.get("properties", [])
-        if isinstance(item, Mapping) and item.get("name")
-    }
+    rules: dict[str, Mapping[str, Any]] = {}
+    pending: list[tuple[Any, str, int]] = []
+    queued = 0
+
+    def enqueue(items: Any, prefix: str, depth: int) -> None:
+        nonlocal queued
+        if (type(items) is not tuple and type(items) is not list) or len(items) > 1_024:
+            raise ValueError("property descriptors must be a bounded sequence")
+        queued += len(items)
+        if queued > 4_096:
+            raise ValueError("property descriptor tree exceeds its validation budget")
+        pending.extend((item, prefix, depth) for item in items)
+
+    enqueue(descriptor.get("properties", ()), "", 0)
+    while pending:
+        item, prefix, depth = pending.pop()
+        if not isinstance(item, Mapping) or not item.get("name"):
+            continue
+        if depth > 16 or len(rules) >= 4_096:
+            raise ValueError("property descriptor tree exceeds its validation budget")
+        name = prefix + str(item["name"])
+        if name in rules:
+            raise ValueError("property descriptor paths must be unique")
+        rules[name] = item
+        nested = item
+        while isinstance(nested, Mapping) and nested.get("value_type") == "array":
+            depth += 1
+            if depth > 16:
+                raise ValueError("property descriptor tree exceeds its validation budget")
+            nested = nested.get("items")
+            if isinstance(nested, Mapping) and (
+                nested.get("sensitive") or nested.get("client_visible", True) is False
+            ):
+                rules[name] = {**rules[name], "sensitive": True}
+        if isinstance(nested, Mapping):
+            enqueue(nested.get("properties", ()), name + ".", depth + 1)
+    return rules
 
 
 def descriptor_sensitive_condition(

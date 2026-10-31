@@ -53,6 +53,13 @@ not just a successful exit or HTTP 200. Confirm unavailable and malformed
 capabilities fail at the core boundary without publishing partial results.
 Parser golden tests must enter `IngestionCoordinator` or the durable CLI to
 establish schema acceptance; direct parser output checks alone are insufficient.
+For native CTF, preflight, nested schemas, query hooks or revision identity,
+run the [synthetic core extension checks](../../../docs/plugin-api-validation.md#run-a-check).
+Distinguish real native decoder results from worker mocks or dependency skips.
+Exercise malformed tails after an early mapper return, ambiguous versions,
+invalid evidence/references, concurrent package/scope isolation and unknown
+terminal delivery. Test nested searchable/private fields through publication,
+not only descriptor construction; large catalogs must leave record quotas intact.
 
 If the user asks for model-based validation of a skill, have fresh subagents
 **use the changed skill** to implement or diagnose representative tasks in

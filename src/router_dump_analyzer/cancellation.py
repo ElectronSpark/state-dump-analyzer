@@ -25,6 +25,20 @@ def current_query_cancellation_probe() -> Callable[[], bool] | None:
     return cancelled.is_set if cancelled is not None else None
 
 
+class QueryCancellationProbe:
+    """Stateless core callback that reads the invoking request's cancellation.
+
+    Source-bound core services can retain this callable's implementation without
+    capturing or exposing the native ContextVar or a particular request event.
+    """
+
+    __slots__ = ()
+
+    def __call__(self) -> bool:
+        probe = current_query_cancellation_probe()
+        return probe() if probe is not None else False
+
+
 def query_cancellation_checkpoint() -> None:
     cancelled = _QUERY_CANCELLED.get()
     if cancelled is not None and cancelled.is_set():
@@ -123,6 +137,7 @@ def cooperatively_sorted[Value](
 
 __all__ = [
     "CancellationErrorFactory",
+    "QueryCancellationProbe",
     "check_cancellation_probe",
     "cooperatively_sorted",
     "current_query_cancellation_probe",

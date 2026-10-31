@@ -112,8 +112,9 @@ from .plugin_execution_plan import (
     PluginExecutionPin,
     plugin_execution_pin_uses_legacy_identity,
 )
-from .plugin_schema_identity import plugin_schema_digest
+from .plugin_schema_identity import plugin_schema_digest, snapshot_plugin_schema
 from .process_control import PROCESS_CONTROL_EXCEPTIONS
+from .property_schema import validate_property_patch
 from .world_read_budget import WorldReadBudget
 
 
@@ -301,6 +302,7 @@ class _SchemaIndex:
     perspectives: frozenset[str]
     topology_perspectives: Mapping[str, frozenset[str]]
     connector_match_policies: Mapping[str, ConnectorMatchPolicyDescriptor]
+    properties_by_kind: Mapping[str, tuple[Any, ...]]
 
     @classmethod
     def build(cls, schema: PluginSchema) -> _SchemaIndex:
@@ -353,6 +355,9 @@ class _SchemaIndex:
             },
             connector_match_policies={
                 descriptor.policy_id: descriptor for descriptor in detached_policies
+            },
+            properties_by_kind={
+                descriptor.kind: descriptor.properties for descriptor in schema.resource_kinds
             },
         )
 
@@ -2005,6 +2010,7 @@ class PluginCapabilityExecutor:
         if type(selected_schema) is not PluginSchema:
             raise TypeError("capability executor requires an exact PluginSchema")
         try:
+            selected_schema = snapshot_plugin_schema(selected_schema)
             schema_identity = plugin_schema_digest(selected_schema)
         except PROCESS_CONTROL_EXCEPTIONS:
             raise
@@ -2447,6 +2453,7 @@ class PluginCapabilityExecutor:
                     f"{label} references undeclared properties: "
                     + ", ".join(sorted(unknown_roots))
                 )
+            validate_property_patch(value, self._schema.properties_by_kind[resource_kind])
         for index, unknown_field in enumerate(value.unknown_fields):
             self._evidence_tuple(
                 unknown_field.evidence,

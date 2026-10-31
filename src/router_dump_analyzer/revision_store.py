@@ -16,6 +16,7 @@ from typing import Any, Protocol, runtime_checkable
 from .plugin_execution_plan import (
     PluginExecutionPlan,
     snapshot_plugin_execution_plan,
+    validate_execution_identity,
 )
 
 
@@ -33,10 +34,8 @@ class RevisionDescriptor:
     execution_plan: PluginExecutionPlan | None = None
 
     def __post_init__(self) -> None:
-        if not self.node_id:
-            raise ValueError("node_id must be non-empty")
-        if not self.revision_id:
-            raise ValueError("revision_id must be non-empty")
+        validate_execution_identity(self.node_id, "node_id")
+        validate_execution_identity(self.revision_id, "revision_id")
         if not self.label:
             raise ValueError("label must be non-empty")
         if self.event_count < 0:

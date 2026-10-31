@@ -21,6 +21,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "plugin_identity", "plugin_identity_runtime_imports",
         "contract_validation_boundaries", "resource_property_policy",
         "property_visibility", "ingestion", "ingestion_execution_boundaries",
+        "scalable_schemas", "package_preflight", "trace_decoder",
     ),
     "revision": (
         "capability_executor", "reconstruction_boundaries",
@@ -34,6 +35,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "zoom_timeline", "zoom_density", "zoom_cancellation", "range_summary_bounds",
         "topology_core", "temporal_relationship_probes", "topology_federation", "federation_executor",
         "multi_node_topology", "resource_property_policy",
+        "query_projection_extensions",
     ),
     "forwarding": (
         "packet_trace_core", "route_packet_projection", "route_presentation_layers",
@@ -55,6 +57,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "plugin_execution_plan", "capability_router", "session_execution_plan",
         "plugin_process_boundaries", "ingestion_pipeline",
         "control_plane_api", "session_store",
+        "canonical_revision_identity",
     ),
     "combined": (
         "plugin_authoring_docs", "demo_durable_review", "demo_workbench",
@@ -67,17 +70,19 @@ HOOK_GROUPS = {
     "describe": "foundation", "probe": "foundation", "locate_inputs": "foundation",
     "parse_status": "foundation", "parse_ctf": "foundation",
     "parse_text_trace": "foundation", "apply": "revision", "revert": "revision",
+    "preflight_package": "foundation",
     "correlate": "revision", "project_relationships": "revision",
     "check_consistency": "revision", "project_topology": "presentation",
     "project_forwarding": "forwarding", "resolve_forwarding_step": "forwarding",
     "analyze_evidence": "evidence",
 }
 
-# Every public Protocol in these three plug-in-facing modules has an owner.
+# Every public Protocol in these plug-in-facing modules has an owner.
 # RuntimeApplicationFactory is included as a host extension, not a parser hook.
 PROTOCOL_GROUPS = {
     "plugin_api": {
         "ArtifactReader": "foundation", "TraceDecoder": "foundation",
+        "PackageRecordReader": "foundation",
         "FederationLinkerPlugin": "presentation", "ReadOnlyWorld": "revision",
         "CorrelationReader": "revision", "AnalyzerPlugin": "foundation",
     },
@@ -89,6 +94,10 @@ PROTOCOL_GROUPS = {
     "normalized_data": {
         "IndexedHistory": "runtime", "NormalizedDatasetSource": "runtime",
         "NormalizedDataPolicy": "runtime",
+    },
+    "route_topology": {
+        "RouteTopologyAccess": "forwarding",
+        "TopologyProjectionProvider": "presentation",
     },
 }
 
