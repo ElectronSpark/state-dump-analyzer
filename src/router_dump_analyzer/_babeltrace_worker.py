@@ -161,7 +161,12 @@ def _clock(bt, snapshot, trace_uid):
     if snapshot is None or _is(bt, snapshot, "_UnknownClockSnapshot"):
         return None, None, {}
     cls = snapshot.clock_class
-    uid = str(cls.uuid) if cls.uuid is not None else cls.name
+    try:
+        clock_uuid = cls.uuid
+    except ValueError:  # UUID access is unsupported with MIP 1.
+        clock_uuid = None
+    uuid_text = str(clock_uuid) if clock_uuid is not None else None
+    uid = uuid_text if uuid_text is not None else cls.name
     # Unknown/non-Unix origins are trace-local even when the display name matches.
     domain = (
         "unix"
@@ -176,7 +181,7 @@ def _clock(bt, snapshot, trace_uid):
         "precision_cycles": cls.precision,
         "origin_is_unix_epoch": cls.origin_is_unix_epoch,
         "name": cls.name,
-        "uuid": str(cls.uuid) if cls.uuid is not None else None,
+        "uuid": uuid_text,
     }
     try:
         timestamp = snapshot.ns_from_origin
@@ -272,11 +277,15 @@ def _messages(bt, root, limits):
         trace = stream.trace
         trace_key = trace.addr
         if trace_key not in trace_ids:
+            try:
+                trace_uuid = trace.uuid
+            except ValueError:  # UUID access is unsupported with MIP 1.
+                trace_uuid = None
             trace_ids[trace_key] = (
                 "trace-"
                 + str(len(trace_ids))
                 + ":"
-                + (str(trace.uuid) if trace.uuid is not None else metadata_digest)
+                + (str(trace_uuid) if trace_uuid is not None else metadata_digest)
             )
         trace_uid = trace_ids[trace_key]
         stream_key = (trace_key, stream.addr)

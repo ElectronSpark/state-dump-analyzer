@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import io
 import json
@@ -17,7 +18,9 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from uuid import UUID
 
+from router_dump_analyzer import _babeltrace_worker as worker
 from router_dump_analyzer._babeltrace_worker import (
     DecodeFailure,
     _clock,
@@ -442,6 +445,132 @@ class TraceDecoderTests(unittest.TestCase):
         self.assertEqual(detail["cycles"], 20)
         self.assertEqual(detail["precision_cycles"], 2)
         self.assertEqual(detail["offset_seconds"], -2)
+
+    def uuid_fixture(self, trace_uuid, clock_uuid, name="mono", unix=False):
+        class Metadata(SimpleNamespace):
+            @property
+            def uuid(self):
+                if isinstance(self.uuid_result, BaseException):
+                    raise self.uuid_result
+                return self.uuid_result
+
+        class StreamBeginningMessage(SimpleNamespace):
+            pass
+
+        class StreamEndMessage(SimpleNamespace):
+            pass
+
+        trace = Metadata(addr=1, uuid_result=trace_uuid)
+        clock = Metadata(
+            uuid_result=clock_uuid, name=name, origin_is_unix_epoch=unix,
+            frequency=100, offset=SimpleNamespace(seconds=-2, cycles=5), precision=2,
+        )
+        stream = SimpleNamespace(
+            trace=trace, addr=2, id=7,
+            cls=SimpleNamespace(id=5, default_clock_class=clock),
+        )
+        snapshot = SimpleNamespace(
+            clock_class=clock, value=20, ns_from_origin=-1750000000,
+        )
+        messages = [
+            kind(stream=stream, default_clock_snapshot=snapshot)
+            for kind in (StreamBeginningMessage, StreamEndMessage)
+        ]
+        bt = SimpleNamespace(
+            find_plugin=lambda name: SimpleNamespace(source_component_classes={"fs": object()}),
+            ComponentSpec=lambda *args: args,
+            TraceCollectionMessageIterator=lambda components: iter(messages),
+        )
+        limits = {
+            "max_metadata_bytes": 10000, "max_messages": 2, "max_field_items": 100,
+            "max_worker_memory_bytes": 1024 * 1024 * 1024,
+            "max_frame_bytes": 10000, "max_output_bytes": 20000,
+        }
+        return SimpleNamespace(bt=bt, clock=clock, messages=messages, limits=limits)
+
+    def test_mip_uuid_access_preserves_identity_fallbacks_and_clock_metadata(self):
+        trace_uuid = UUID("00000000-0000-0000-0000-000000000001")
+        clock_uuid = UUID("00000000-0000-0000-0000-000000000002")
+        for mip, trace_value, clock_value in (
+            (0, trace_uuid, clock_uuid),
+            (0, None, None),
+            (1, ValueError("trace UUID requires MIP 0"), ValueError("clock UUID requires MIP 0")),
+        ):
+            for name in ("mono", None):
+                for unix in (False, True):
+                    with self.subTest(mip=mip, uuid=trace_value, name=name, unix=unix):
+                        fixture = self.uuid_fixture(trace_value, clock_value, name, unix)
+                        metadata, _ = _metadata(self.root, fixture.limits)
+                        digest = hashlib.sha256(json.dumps(metadata, sort_keys=True).encode()).hexdigest()[:20]
+                        expected_trace = "trace-0:" + (
+                            str(trace_value) if mip == 0 and trace_value is not None else digest
+                        )
+                        expected_uuid = str(clock_value) if mip == 0 and clock_value is not None else None
+                        records = list(worker._messages(fixture.bt, self.root, fixture.limits))
+                        self.assertEqual(len(records), 2)
+                        self.assertEqual(records[0]["decoder_metadata"]["source_metadata"], metadata)
+                        for ordinal, record in enumerate(records):
+                            self.assertEqual(record["message_ordinal"], ordinal)
+                            self.assertEqual(record["trace_uid"], expected_trace)
+                            self.assertEqual(record["stream_uid"], expected_trace + ":class-5:stream-7")
+                            self.assertEqual(record["timestamp_ns"], -1750000000)
+                            self.assertEqual(record["clock_domain"], "unix" if unix else
+                                             "ctf:" + expected_trace + ":" + (expected_uuid or name or "default"))
+                            self.assertEqual(record["decoder_metadata"]["clock"], {
+                                "cycles": 20, "frequency": 100, "offset_seconds": -2,
+                                "offset_cycles": 5, "precision_cycles": 2,
+                                "origin_is_unix_epoch": unix, "name": name, "uuid": expected_uuid,
+                            })
+
+    def test_uuid_compatibility_does_not_hide_genuine_worker_failures(self):
+        class InvalidUuid:
+            def __str__(self):
+                raise ValueError("invalid UUID value")
+
+        for fault in ("none", "trace-access", "clock-access", "trace-value", "clock-value", "clock-time", "iterator"):
+            with self.subTest(fault=fault):
+                trace_uuid = RuntimeError("trace failure") if fault == "trace-access" else None
+                clock_uuid = RuntimeError("clock failure") if fault == "clock-access" else None
+                if fault == "trace-value":
+                    trace_uuid = InvalidUuid()
+                if fault == "clock-value":
+                    clock_uuid = InvalidUuid()
+                fixture = self.uuid_fixture(trace_uuid, clock_uuid)
+                if fault == "clock-time":
+                    class BrokenSnapshot(SimpleNamespace):
+                        @property
+                        def ns_from_origin(self):
+                            raise ValueError("invalid clock time")
+
+                    fixture.messages[0].default_clock_snapshot = BrokenSnapshot(
+                        clock_class=fixture.clock, value=20,
+                    )
+                if fault == "iterator":
+                    def broken_iterator(components):
+                        raise ValueError("malformed packet")
+
+                    fixture.bt.TraceCollectionMessageIterator = broken_iterator
+                if fault != "none":
+                    error_type = RuntimeError if fault.endswith("access") else ValueError
+                    with self.assertRaises(error_type):
+                        list(worker._messages(fixture.bt, self.root, fixture.limits))
+                # The worker must still report a malformed-input frame for genuine failures.
+                buffer = io.BytesIO()
+                with (
+                    io.TextIOWrapper(buffer, encoding="ascii") as output,
+                    patch.dict(sys.modules, {"bt2": fixture.bt}),
+                    patch.object(worker, "_memory_limit", return_value=None),
+                    patch.object(sys, "argv", ["worker", str(self.root), json.dumps(fixture.limits)]),
+                    patch.object(sys, "stdout", output),
+                ):
+                    self.assertEqual(worker.main(), 0 if fault == "none" else 1)
+                    output.flush()
+                    frames = [json.loads(line) for line in buffer.getvalue().splitlines()]
+                    if fault == "none":
+                        self.assertEqual(len(frames), 3)
+                        self.assertEqual(frames[-1], {"complete": True, "messages": 2})
+                    else:
+                        self.assertEqual(frames, [{"error": "CTF_MALFORMED"}])
 
     def fake_process(self, script):
         original = subprocess.Popen
