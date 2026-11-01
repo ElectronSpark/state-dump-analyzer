@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import _imp
 import abc
 import ast
 import builtins
@@ -21,8 +22,27 @@ from collections import OrderedDict
 from dataclasses import dataclass, field, is_dataclass
 from dataclasses import fields as dataclass_fields
 from enum import Enum
+from importlib.machinery import (
+    EXTENSION_SUFFIXES,
+    BuiltinImporter,
+    ExtensionFileLoader,
+    FrozenImporter,
+    ModuleSpec,
+    PathFinder,
+)
 from pathlib import Path
-from types import CodeType, FunctionType, GenericAlias, MappingProxyType, ModuleType
+from types import (
+    BuiltinFunctionType,
+    CodeType,
+    FunctionType,
+    GenericAlias,
+    GetSetDescriptorType,
+    MappingProxyType,
+    MemberDescriptorType,
+    MethodDescriptorType,
+    ModuleType,
+    WrapperDescriptorType,
+)
 from typing import Any, cast
 
 # Only deterministic compilation artifacts cross attestation boundaries. Source
@@ -152,6 +172,8 @@ class _NativeExportIndex:
     namespace: dict[str, object]
     snapshot: tuple[tuple[object, object], ...]
     exports: dict[int, tuple[object, tuple[str, ...]]]
+    provenance: tuple[object, ...] | None = None
+    content: tuple[Path, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +263,9 @@ class _TargetIdentityBudget:
     )
     object_refs: dict[int, object] = field(default_factory=dict)
     native_export_indexes: dict[int, _NativeExportIndex] = field(
+        default_factory=dict
+    )
+    native_type_identities: dict[int, tuple[type[Any], str, tuple[str, str, str]]] = field(
         default_factory=dict
     )
     function_dependency_analyses: dict[int, _FunctionDependencyAnalysis] = field(
@@ -4192,6 +4217,11 @@ def _update_source_dependency_leaf(
         )
         _digest_field(digest, origin_kind.encode("ascii"))
         return
+    if inspect.isclass(value):
+        native_identity = _native_type_identity(value, budget=budget, depth=depth)
+        if native_identity is not None:
+            _digest_field(digest, native_identity.encode("ascii"))
+            return
     if inspect.isclass(value) and _update_external_exported_dependency(
         digest,
         value,
@@ -7023,6 +7053,15 @@ def _update_global_reference(
     reference_type = value if inspect.isclass(value) else type(value)
     if type(value) is FunctionType or inspect.isclass(value):
         reference_type = value
+    native_identity = _native_type_identity(reference_type, budget=budget, depth=depth)
+    if native_identity is not None and (
+        inspect.isclass(value) or budget.leaf_external_references
+    ):
+        _digest_field(digest, b"native-authority-leaf")
+        _digest_field(digest, native_identity.encode("ascii"))
+        if budget.bind_exact_object_tokens:
+            _update_exact_object_token(digest, value, budget=budget)
+        return
     reference_module = getattr(reference_type, "__module__", None)
     reference_name = getattr(reference_type, "__qualname__", None)
     if (
@@ -8317,6 +8356,289 @@ def _cached_scope_identity(
     return value
 
 
+def _native_module_provenance(module: ModuleType) -> tuple[object, ...] | None:
+    """Verify loader-owned native coordinates, never an origin string alone."""
+    namespace = vars(module)
+    name = namespace.get("__name__")
+    spec = namespace.get("__spec__")
+    origin = getattr(spec, "origin", None)
+    loader = getattr(spec, "loader", None)
+    extension = type(origin) is str and any(
+        origin.endswith(suffix) for suffix in EXTENSION_SUFFIXES
+    )
+    if type(origin) is not str or (
+        origin not in {"built-in", "frozen"} and not extension
+    ):
+        return None
+    if (
+        type(module) is not ModuleType
+        or type(name) is not str
+        or sys.modules.get(name) is not module
+        or type(spec) is not ModuleSpec
+        or spec.name != name
+        or namespace.get("__loader__") is not loader
+    ):
+        raise PluginExecutableIdentityError("native module provenance is unverifiable")
+    if name in sys.builtin_module_names:
+        valid = (
+            origin == "built-in"
+            and loader is BuiltinImporter
+            and namespace.get("__file__") is None
+        )
+    elif _imp.is_frozen(name):
+        valid = origin == "frozen" and loader is FrozenImporter
+    else:
+        parent_name, separator, _ = name.rpartition(".")
+        parent = sys.modules.get(parent_name) if separator else None
+        search_path = (
+            vars(parent).get("__path__") if type(parent) is ModuleType else None
+        )
+        resolved = PathFinder.find_spec(name, search_path)
+        valid = (
+            type(loader) is ExtensionFileLoader
+            and loader.name == name
+            and loader.path == origin
+            and namespace.get("__file__") == origin
+            and (not separator or search_path is not None)
+            and type(resolved) is ModuleSpec
+            and type(resolved.loader) is ExtensionFileLoader
+            and resolved.name == name
+            and resolved.origin == origin
+            and resolved.loader.name == name
+            and resolved.loader.path == origin
+        )
+    if not valid:
+        raise PluginExecutableIdentityError(
+            "native module loader or origin is unverifiable"
+        )
+    return (
+        spec,
+        loader,
+        origin,
+        namespace.get("__file__"),
+        getattr(loader, "name", None),
+        getattr(loader, "path", None),
+    )
+
+
+def _native_type_image_path(implementation: type[Any]) -> Path:
+    """Resolve the loaded image of an exact native type's C constructor."""
+    import ctypes
+
+    if sys.implementation.name != "cpython":
+        raise PluginExecutableIdentityError(
+            "native type image verification requires CPython"
+        )
+    try:
+        # Py_tp_new=65 and PyType_GetSlot are part of CPython's stable C ABI.
+        get_slot = ctypes.pythonapi.PyType_GetSlot
+        get_slot.argtypes = (ctypes.py_object, ctypes.c_int)
+        get_slot.restype = ctypes.c_void_p
+        address = get_slot(implementation, 65)
+        if not address:
+            raise ValueError("native constructor is unavailable")
+        if os.name == "nt":
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            get_module = kernel.GetModuleHandleExW
+            get_module.argtypes = (
+                ctypes.c_uint,
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_void_p),
+            )
+            get_module.restype = ctypes.c_int
+            module = ctypes.c_void_p()
+            # FROM_ADDRESS | UNCHANGED_REFCOUNT; this only inspects loaded images.
+            if not get_module(6, address, ctypes.byref(module)):
+                raise OSError("native constructor image is unavailable")
+            get_filename = kernel.GetModuleFileNameW
+            get_filename.argtypes = (ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint)
+            get_filename.restype = ctypes.c_uint
+            buffer = ctypes.create_unicode_buffer(32_768)
+            length = get_filename(module, buffer, len(buffer))
+            if not 0 < length < len(buffer):
+                raise OSError("native constructor image path is unavailable")
+            return Path(buffer.value)
+
+        # Keep ctypes lazy without a nested class declaration, which the pinned
+        # stub generator incorrectly exposes as a synthetic module export.
+        info_type = type(
+            "_DlInfo",
+            (ctypes.Structure,),
+            {
+                "_fields_": (
+                    ("filename", ctypes.c_char_p),
+                    ("base", ctypes.c_void_p),
+                    ("symbol", ctypes.c_char_p),
+                    ("address", ctypes.c_void_p),
+                )
+            },
+        )
+
+        resolve = ctypes.CDLL(None).dladdr
+        resolve.argtypes = (ctypes.c_void_p, ctypes.POINTER(info_type))
+        resolve.restype = ctypes.c_int
+        info = info_type()
+        if not resolve(address, ctypes.byref(info)) or not info.filename:
+            raise OSError("native constructor image is unavailable")
+        return Path(os.fsdecode(info.filename))
+    except (AttributeError, OSError, TypeError, ValueError) as error:
+        raise PluginExecutableIdentityError(
+            "native type image is unverifiable"
+        ) from error
+
+
+def _native_type_identity(
+    implementation: object,
+    *,
+    budget: _TargetIdentityBudget,
+    depth: int,
+) -> str | None:
+    """Bind a native type to its actual exports, live shape and executable bytes."""
+    if not inspect.isclass(implementation):
+        return None
+    module_name = getattr(implementation, "__module__", None)
+    if type(module_name) is not str or module_name == "builtins":
+        return None
+    module = sys.modules.get(module_name)
+    if type(module) is not ModuleType:
+        return None
+    provenance = _native_module_provenance(module)
+    if provenance is None:
+        return None
+    module_source = _module_file_source_path(module, budget=budget)
+    if (
+        module_source is not None
+        and module_source.suffix.lower() in {".py", ".pyw"}
+        and _object_source_path(implementation, budget=budget) == module_source
+    ):
+        # Frozen Python modules can still contain ordinary source-backed classes.
+        return None
+    # Native heap types (including the JSON accelerators) can be mutable. An
+    # exact C allocator owned by this type proves more than copied type names
+    # or a metaclass overriding __flags__; bind their live members below too.
+    allocator = vars(implementation).get("__new__")
+    if type(implementation) is not type or not (
+        type.__getattribute__(implementation, "__flags__") & 0x100
+        or (
+            type(allocator) is BuiltinFunctionType
+            and allocator.__self__ is implementation
+        )
+    ):
+        raise PluginExecutableIdentityError("native type provenance is unverifiable")
+    canonical = (
+        _static_import_target(module, implementation.__qualname__) is implementation
+    )
+    if canonical and type.__getattribute__(implementation, "__flags__") & 0x100:
+        # Immutable canonical types retain their established verification path.
+        return None
+    names = _native_export_names(module, implementation, budget=budget, depth=depth + 1)
+    if not names:
+        raise PluginExecutableIdentityError(
+            "native type export was replaced or is unverifiable"
+        )
+    index = budget.native_export_indexes[id(module)]
+    if provenance[2] not in {"built-in", "frozen"}:
+        try:
+            matches_image = os.path.samefile(
+                _native_type_image_path(implementation),
+                cast(str, provenance[2]),
+            )
+        except OSError as error:
+            raise PluginExecutableIdentityError(
+                "native image origin is unavailable"
+            ) from error
+        if not matches_image:
+            raise PluginExecutableIdentityError(
+                "native image and module origin disagree"
+            )
+    if index.provenance is None:
+        index.provenance = provenance
+        if provenance[2] not in {"built-in", "frozen"}:
+            path = _module_file_source_path(module, budget=budget)
+            if path is None:
+                raise PluginExecutableIdentityError(
+                    "native executable content is unavailable"
+                )
+            content = _read_regular_source_bytes(path)
+            _consume_target_bytes(budget, len(content))
+            index.content = (path, hashlib.sha256(content).hexdigest())
+    _verify_native_export_index(index)
+    metadata = (implementation.__name__, implementation.__qualname__, module_name)
+    cached = budget.native_type_identities.get(id(implementation))
+    if cached is not None:
+        if cached[0] is not implementation or cached[2] != metadata:
+            raise PluginExecutableIdentityError(
+                "native type identity cache is inconsistent"
+            )
+        _verify_class_member_snapshot(
+            implementation,
+            budget.class_snapshots[id(implementation)][1],
+            label="native exported type",
+        )
+        return None if canonical else cached[1]
+    digest = hashlib.sha256(b"native-type-alias\0")
+    _digest_field(digest, module_name.encode("utf-8"))
+    _digest_field(digest, implementation.__qualname__.encode("utf-8"))
+    _digest_field(
+        digest,
+        str(provenance[2] if index.content is None else "extension").encode("ascii"),
+    )
+    if index.content is not None:
+        _digest_field(digest, index.content[1].encode("ascii"))
+    for name in names:
+        _digest_field(digest, name.encode("utf-8"))
+    members = _bounded_class_members(
+        implementation,
+        budget=budget,
+        depth=depth + 1,
+        label="native exported type",
+    )
+    # Native descriptor repr uses the C type name, not the writable Python
+    # __module__. An alias cannot authenticate itself by retagging a real heap
+    # type as a different module. Setting __name__ replaces that C name, so a
+    # dotted Python name is not accepted as independent provenance either.
+    type_name = implementation.__name__
+    native_owner = f" of '{module_name}.{type_name}' objects>"
+    authenticated_owner = False
+    for name, member in members:
+        _digest_field(digest, name.encode("utf-8"))
+        if type(member) is BuiltinFunctionType and member.__self__ is implementation:
+            _digest_field(digest, b"native-type-callable")
+            _digest_field(digest, member.__name__.encode("utf-8"))
+        elif (
+            any(
+                type(member) is kind
+                for kind in (
+                    GetSetDescriptorType,
+                    MemberDescriptorType,
+                    MethodDescriptorType,
+                    WrapperDescriptorType,
+                )
+            )
+            and member.__objclass__ is implementation
+        ):
+            authenticated_owner |= type(member).__repr__(member).endswith(native_owner)
+            _digest_field(digest, type(member).__name__.encode("ascii"))
+            _digest_field(digest, member.__name__.encode("utf-8"))
+        else:
+            _update_stable_value(digest, member, budget=budget, depth=depth + 1)
+    if (
+        not authenticated_owner
+        or "." in type_name
+        or implementation.__qualname__.rsplit(".", 1)[-1] != type_name
+    ):
+        raise PluginExecutableIdentityError("native type module origin is unverifiable")
+    _verify_class_member_snapshot(implementation, members, label="native exported type")
+    budget.class_snapshots[id(implementation)] = (implementation, members)
+    identity = digest.hexdigest()
+    budget.native_type_identities[id(implementation)] = (
+        implementation,
+        identity,
+        metadata,
+    )
+    return None if canonical else identity
+
+
 def _native_export_names(
     module: ModuleType,
     value: object,
@@ -8373,7 +8695,13 @@ def _build_native_export_index(
         type(module_name) is not str
         or not module_name
         or sys.modules.get(module_name) is not module
-        or getattr(spec, "origin", None) not in {"built-in", "frozen"}
+        or not (
+            getattr(spec, "origin", None) in {"built-in", "frozen"}
+            or (
+                type(getattr(spec, "origin", None)) is str
+                and any(spec.origin.endswith(suffix) for suffix in EXTENSION_SUFFIXES)
+            )
+        )
     ):
         raise PluginExecutableIdentityError(
             "module target native module has no exact loaded provenance"
@@ -8441,11 +8769,39 @@ def _verify_native_export_index(index: _NativeExportIndex) -> None:
         raise PluginExecutableIdentityError(
             "module target native module changed while fingerprinting"
         ) from error
+    if index.provenance is not None:
+        current = _native_module_provenance(index.module)
+        if (
+            current is None
+            or current[0] is not index.provenance[0]
+            or current[1] is not index.provenance[1]
+            or current[2:] != index.provenance[2:]
+        ):
+            raise PluginExecutableIdentityError("native module provenance changed while fingerprinting")
 
 
 def _verify_native_export_indexes(budget: _TargetIdentityBudget) -> None:
+    for implementation, _, metadata in budget.native_type_identities.values():
+        current = (implementation.__name__, implementation.__qualname__, implementation.__module__)
+        if any(type(item) is not str for item in current) or current != metadata:
+            raise PluginExecutableIdentityError("native type metadata changed while fingerprinting")
+        module = sys.modules.get(metadata[2])
+        index = budget.native_export_indexes.get(id(module))
+        if index is not None and index.content is not None:
+            try:
+                matches_image = os.path.samefile(
+                    _native_type_image_path(implementation), index.content[0],
+                )
+            except OSError as error:
+                raise PluginExecutableIdentityError("native image origin is unavailable") from error
+            if not matches_image:
+                raise PluginExecutableIdentityError("native image origin changed while fingerprinting")
     for index in tuple(budget.native_export_indexes.values()):
         _verify_native_export_index(index)
+        if index.content is not None:
+            path, expected = index.content
+            if hashlib.sha256(_read_regular_source_bytes(path)).hexdigest() != expected:
+                raise PluginExecutableIdentityError("native executable content changed while fingerprinting")
 
 
 def _verify_function_dependency_analyses(budget: _TargetIdentityBudget) -> None:

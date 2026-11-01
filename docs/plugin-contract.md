@@ -201,7 +201,18 @@ implementation module/package bytes, and relocation-stable Python code
 identity. Dynamic aliases, sourceless/native-only targets, unverifiable
 re-exports, runtime-generated or unsafe closure callables, noncanonical builtins,
 unsafe mutable global dereferences, dynamic or unloaded imports, and other
-unverifiable runtime code state MUST fail closed. Every exact
+unverifiable runtime code state MUST fail closed. A native dependency type
+MAY be bound through its actual module export names,
+even when those names differ from `__name__` or `__qualname__` (for example,
+`_json.make_scanner` and `_json.make_encoder`). This does not permit a native-only
+top-level plug-in target or dynamic attribute lookup. Core MUST verify the
+loaded module's native loader/origin, exact export binding, native type and live
+members, and extension-module executable bytes. For extension type aliases,
+the loaded constructor image MUST agree with that origin; mutable module metadata
+or an import-path lookup alone is insufficient. Forged provenance and replaced
+exports MUST fail closed. These checks remain bounded and participate in the
+existing before/after invocation verification; no module-name whitelist grants
+authority. Every exact
 bytecode-referenced function global, static attribute path, statically
 resolvable local import, and function-owned executable value MUST be traversed
 recursively even when its helper belongs to a different top-level package. The

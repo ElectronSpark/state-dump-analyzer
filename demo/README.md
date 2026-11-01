@@ -111,6 +111,15 @@ quotas. The [focused ingestion checks](../docs/plugin-api-validation.md#ingestio
 exercise a larger synthetic observation, default rejection, and unchanged
 protections.
 
+The teaching parser can keep using standard `json.loads`. Core verifies native
+dependency types by their actual export bindings, including the JSON scanner
+and encoder aliases; no parser wrapper or accelerator renaming is needed.
+The [native alias integration checks](../docs/plugin-api-validation.md#native-export-aliases)
+use a separate synthetic parser with both `json.loads` and `json.dumps`, the
+16,384-unit host budget, actual process bootstrap, and retained catalog/dataset
+publication. They also verify that the unchanged default budget rejects the
+larger output without publishing a revision.
+
 The distribution uses the collision-resistant import packages
 `rsl_demo_plugin` and `rsl_demo_generator`. It deliberately does not publish
 generic top-level packages named `plugin` or `generator`, which are likely to

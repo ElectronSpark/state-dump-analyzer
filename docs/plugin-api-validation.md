@@ -99,6 +99,25 @@ configuration, admission and immutable publication, quota rejection, and
 unchanged depth/container/aggregate protections. The separate typed-property
 budget remains 4,096; changing the output budget does not expand schema bounds.
 
+### Native export aliases
+
+For native dependency types exported under a name different from their type
+name, run:
+
+```text
+python -m unittest tests.test_native_export_identity tests.test_native_export_content tests.test_native_alias_ingestion tests.test_ingestion_value_limits -v
+```
+
+The identity tests cover JSON scanner/encoder aliases, forged provenance,
+replaced exports, and invocation checks. The executable-content tests use a
+real extension-module binary when the interpreter provides one; built-in-only
+platforms skip those cases explicitly. The integration tests register an
+importable synthetic JSON parser and run actual process bootstrap, ingestion,
+SQLite catalog publication, and reopening of the retained dataset. They assert
+the 16,384-unit budget, complete samples, source evidence, and diagnostics;
+the unchanged 4,096 default must fail without publication. Direct parser calls
+or successful registration alone do not establish this combined path.
+
 ### Executable identity troubleshooting
 
 Before tests, print `sys.executable` and verify imports required by the selected

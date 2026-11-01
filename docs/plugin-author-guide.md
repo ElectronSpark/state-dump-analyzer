@@ -177,6 +177,18 @@ actual VCS/cache **directory** named `.git`, `.hg`, `.svn`, `__pycache__`,
 contained alias with one of those names still participates in identity; an
 escaping alias fails closed.
 
+Native dependencies may export a type under a name different from its type name.
+Ordinary `json.loads` and `json.dumps` therefore need no wrapper or renamed
+`Scanner`/`Encoder` attribute: core verifies the real `_json.make_scanner` and
+`_json.make_encoder` bindings. Loader/origin checks, live type members, extension
+binary identity, and verification before and after invocation still apply.
+Extension alias verification currently requires CPython and an identifiable
+native constructor image; types whose origin cannot be proven fail closed.
+This support does not admit native-only top-level plug-in targets or forged
+exports. Run the [native export checks](plugin-api-validation.md#native-export-aliases)
+through registration, spawned ingestion, and durable publication before claiming
+that a parser is ready.
+
 On durable publication the core also creates an immutable execution plan for
 the revision. A plug-in author does not construct or persist this plan. Keep
 `describe()`, the normalized schema, capability declarations, and output

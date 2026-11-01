@@ -34,6 +34,8 @@ class _NativeExportIndex:
     namespace: dict[str, object]
     snapshot: tuple[tuple[object, object], ...]
     exports: dict[int, tuple[object, tuple[str, ...]]]
+    provenance: tuple[object, ...] | None = ...
+    content: tuple[Path, str] | None = ...
 
 @dataclass(frozen=True, slots=True)
 class _FunctionDependencyAnalysis:
@@ -88,6 +90,7 @@ class _TargetIdentityBudget:
     object_snapshots: dict[int, tuple[tuple[object, object], ...]] = field(default_factory=dict)
     object_refs: dict[int, object] = field(default_factory=dict)
     native_export_indexes: dict[int, _NativeExportIndex] = field(default_factory=dict)
+    native_type_identities: dict[int, tuple[type[Any], str, tuple[str, str, str]]] = field(default_factory=dict)
     function_dependency_analyses: dict[int, _FunctionDependencyAnalysis] = field(default_factory=dict)
     owned_descriptor_accessors: dict[int, list[_OwnedDescriptorAccessor]] = field(default_factory=dict)
     owned_static_descriptors: dict[int, list[_OwnedStaticDescriptor]] = field(default_factory=dict)

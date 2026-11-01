@@ -2103,6 +2103,11 @@ bounded module/package-byte, and Python-code identity; dynamic aliases and
 sourceless targets are unavailable. Parent and child revalidate these
 identities before execution, and the parent repeats the check on child-plan
 readmission and final staging.
+Verified native dependency type aliases remain supported: the export attribute
+need not match the type name. Core binds the exact loaded module, native
+loader/origin, export and live members, plus extension binary content. This
+does not admit dynamic or native-only top-level targets; invocation and
+child-plan checks retain the same authority boundary.
 Configured/stateful components
 must declare explicit process module targets. A non-default programmatic
 `configuration_digest` requires a module-instance

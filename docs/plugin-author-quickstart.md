@@ -49,6 +49,10 @@ for stages, advisory fixture reporting, and manual retry behavior.
 The repository also executes this exact smoke block in a temporary state
 directory through `tests.test_plugin_authoring_docs`.
 
+Parsers can use ordinary `json.loads` and `json.dumps`; core verifies their
+[native export aliases](plugin-api-validation.md#native-export-aliases) without
+requiring authors to rename or wrap the JSON accelerators.
+
 To inspect the same parser in the browser, run:
 
 ```text

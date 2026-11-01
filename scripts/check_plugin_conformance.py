@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import argparse
 import ast
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -19,6 +19,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "plugin_api", "plugin_loading", "plugin_validation", "artifact_core",
         "canonical", "source_record_core", "contract_validation",
         "plugin_identity", "plugin_identity_runtime_imports",
+        "native_export_identity", "native_export_content",
         "contract_validation_boundaries", "resource_property_policy",
         "property_visibility", "ingestion", "ingestion_execution_boundaries", "ingestion_value_limits",
         "scalable_schemas", "package_preflight", "trace_decoder",
@@ -60,6 +61,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "canonical_revision_identity",
     ),
     "combined": (
+        "native_alias_ingestion",
         "plugin_authoring_docs", "demo_durable_review", "demo_workbench",
         "demo_cross_node_consistency", "generated_assembly_api_integration",
         "control_plane_private_analysis_evidence",
@@ -120,8 +122,10 @@ def public_protocol_names(source: str) -> set[str]:
 def check_inventory() -> list[str]:
     """Check declared hook ownership and test targets without importing fixtures."""
     from router_dump_analyzer.plugin_api import (
-        AnalyzerPlugin, PLUGIN_CAPABILITY_HOOKS, PluginCapability,
+        PLUGIN_CAPABILITY_HOOKS,
         REQUIRED_PLUGIN_HOOKS,
+        AnalyzerPlugin,
+        PluginCapability,
     )
 
     errors = []

@@ -190,6 +190,11 @@ relocation-stable Python code identity. Its bounded object graph follows exact
 bytecode globals/static paths across package boundaries and binds callable
 instance/class state; dynamic, sourceless, aliased, cyclic mutable, or opaque
 targets fail closed.
+Native dependency type aliases use the module's bounded, identity-based export
+index rather than an assumed type-name attribute. Canonical native loader/origin
+checks, live export/member snapshots, and extension binary content participate
+in attestation and its final recheck. This admits the JSON scanner and encoder
+aliases without a module-name whitelist or relaxing top-level target rules.
 Only the bootstrap's expected identity is excluded to avoid self-reference.
 Probe candidates persist that identity, and ingestion refuses to run if a
 restart supplies a different registration. Installed loaders provide real
