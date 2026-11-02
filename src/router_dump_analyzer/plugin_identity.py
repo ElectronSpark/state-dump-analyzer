@@ -74,6 +74,7 @@ MAX_PLUGIN_PACKAGE_PATHS = 8_192
 MAX_PLUGIN_PACKAGE_BYTES: int = 128 * 1024 * 1024
 MAX_PLUGIN_PACKAGE_FILE_BYTES: int = 32 * 1024 * 1024
 MAX_PLUGIN_PACKAGE_PATH_BYTES = 4_096
+_MAX_DECLARED_PACKAGE_ENTRIES = 65_536
 
 _IGNORED_DIRECTORY_NAMES = {
     "__pycache__",
@@ -162,6 +163,17 @@ class _ExecutableScope:
     kind: str
     logical_name: str
     roots: tuple[Path, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _PackageEntryLimits:
+    """One package's declaration, detached from mutable module configuration."""
+
+    module_name: str
+    module: ModuleType | None
+    declared_entries: int | None
+    max_entries: int
+    max_paths: int
 
 
 @dataclass(slots=True)
@@ -296,6 +308,7 @@ class _TargetIdentityBudget:
     bind_exact_object_tokens: bool = False
     root_scope_identity: str | None = None
     external_class_member_runtime_depth: int = 0
+    package_entry_limits: dict[str, _PackageEntryLimits] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -470,6 +483,7 @@ def executable_callable_fingerprint(callback: Any) -> str:
     result = f"callable-sha256:{digest.hexdigest()}"
     _verify_class_identity_caches(budget)
     _verify_object_identity_caches(budget)
+    _verify_package_entry_limit_snapshots(budget)
     return result
 
 
@@ -522,7 +536,7 @@ def executable_module_target_fingerprint(
         raise PluginExecutableIdentityError(
             "module target has no exact source-file provenance"
         )
-    target_scope = _executable_scope_fingerprint(module_name, module_source)
+    target_scope = _executable_scope_fingerprint(module_name, module_source, budget=budget)
     root_source_identity = _source_module_identity(module_name, module_source)
     scope_cache = {
         _SOURCE_ONLY_SCOPE_CACHE_MARKER: "1",
@@ -610,6 +624,7 @@ def executable_module_target_fingerprint(
         implementation_scope = _executable_scope_fingerprint(
             defining_module,
             implementation_source,
+            budget=budget,
         )
         scope_cache[_scope_cache_key(defining_module, implementation_source)] = (
             implementation_scope
@@ -644,6 +659,7 @@ def executable_module_target_fingerprint(
     result = f"target-sha256:{digest.hexdigest()}"
     _verify_class_identity_caches(budget)
     _verify_object_identity_caches(budget)
+    _verify_package_entry_limit_snapshots(budget)
     return result
 
 
@@ -894,6 +910,7 @@ def _update_retained_capability_reference(
                 module_name,
                 module_source,
                 scope_cache,
+                budget=budget,
             ).encode("ascii"),
         )
         return
@@ -963,6 +980,7 @@ def _update_external_exported_dependency(
                 exported_module_name,
                 exported_source,
                 scope_cache,
+                budget=budget,
             ).encode("ascii"),
         )
         if type(value) is FunctionType:
@@ -1022,6 +1040,7 @@ def _update_external_exported_dependency(
                         globals_module_name,
                         globals_source,
                         scope_cache,
+                        budget=budget,
                     ).encode("ascii"),
                 )
             selected_code = value.__code__
@@ -1125,6 +1144,7 @@ def _update_external_exported_dependency(
                 implementation_module_name,
                 implementation_source,
                 scope_cache,
+                budget=budget,
             ).encode("ascii"),
         )
     _verify_dict_snapshot(namespace, snapshot)
@@ -1960,6 +1980,7 @@ def _update_abc_class_contract(
                     selected_module,
                     selected_source,
                     scope_cache,
+                    budget=budget,
                 ),
                 generation_identity,
             )
@@ -2599,6 +2620,7 @@ def _update_enum_metaclass_dependency(
             module_name,
             module_source,
             scope_cache,
+            budget=budget,
         ).encode("ascii"),
     )
     members = _bounded_class_members(
@@ -3611,7 +3633,7 @@ def _update_contextmanager_function_dependency(
     _digest_field(digest, b"dependency-contextmanager")
     _digest_field(
         digest,
-        _cached_scope_identity("contextlib", contextlib_source, scope_cache).encode(
+        _cached_scope_identity("contextlib", contextlib_source, scope_cache, budget=budget).encode(
             "ascii"
         ),
     )
@@ -3880,7 +3902,7 @@ def _update_source_dependency_leaf(
         _digest_field(digest, descriptor_name.encode("utf-8"))
         _digest_field(
             digest,
-            _cached_scope_identity("enum", enum_source, scope_cache).encode("ascii"),
+            _cached_scope_identity("enum", enum_source, scope_cache, budget=budget).encode("ascii"),
         )
         for name, item in sorted(snapshot):
             if type(name) is not str:
@@ -3984,6 +4006,7 @@ def _update_source_dependency_leaf(
                 owner_module_name,
                 owner_source,
                 scope_cache,
+                budget=budget,
             )
         _digest_field(digest, b"dependency-static-member-descriptor")
         _digest_field(digest, owner_module_name.encode("utf-8"))
@@ -4049,7 +4072,7 @@ def _update_source_dependency_leaf(
         _digest_field(digest, module_name.encode("utf-8"))
         _digest_field(
             digest,
-            _cached_scope_identity(module_name, source_path, scope_cache).encode(
+            _cached_scope_identity(module_name, source_path, scope_cache, budget=budget).encode(
                 "ascii"
             ),
         )
@@ -4103,7 +4126,7 @@ def _update_source_dependency_leaf(
         _digest_field(digest, qualified_name.encode("utf-8"))
         _digest_field(
             digest,
-            _cached_scope_identity(module_name, module_source, scope_cache).encode(
+            _cached_scope_identity(module_name, module_source, scope_cache, budget=budget).encode(
                 "ascii"
             ),
         )
@@ -4282,6 +4305,7 @@ def _update_source_dependency_leaf(
                     module_name,
                     module_source,
                     scope_cache,
+                    budget=budget,
                 ).encode("ascii"),
             )
             return
@@ -4302,7 +4326,7 @@ def _update_source_dependency_leaf(
         _digest_field(digest, qualified_name.encode("utf-8"))
         _digest_field(
             digest,
-            _cached_scope_identity(module_name, module_source, scope_cache).encode(
+            _cached_scope_identity(module_name, module_source, scope_cache, budget=budget).encode(
                 "ascii"
             ),
         )
@@ -5298,12 +5322,12 @@ def _update_same_root_stateless_singleton(
         _digest_field(digest, coordinate.encode("utf-8"))
     _digest_field(
         digest,
-        _cached_scope_identity(owner_name, owner_source, scope_cache).encode("ascii"),
+        _cached_scope_identity(owner_name, owner_source, scope_cache, budget=budget).encode("ascii"),
     )
     if module_name != owner_name:
         _digest_field(
             digest,
-            _cached_scope_identity(module_name, module_source, scope_cache).encode(
+            _cached_scope_identity(module_name, module_source, scope_cache, budget=budget).encode(
                 "ascii"
             ),
         )
@@ -6141,6 +6165,7 @@ def _instance_runtime_identity(
                     module_name,
                     module_source,
                     scope_cache,
+                    budget=budget,
                 ).encode("ascii"),
             )
             declared = _declared_code_objects(
@@ -6467,6 +6492,7 @@ def _update_lru_cache_wrapper_reference(
                 "functools",
                 module_source,
                 scope_cache,
+                budget=budget,
             ).encode("ascii"),
         )
         _digest_field(
@@ -6804,7 +6830,7 @@ def _update_global_reference(
         else:
             _digest_field(
                 digest,
-                _cached_scope_identity(name, source, scope_cache).encode("ascii"),
+                _cached_scope_identity(name, source, scope_cache, budget=budget).encode("ascii"),
              )
         return
     if is_dataclass(value) and not inspect.isclass(value):
@@ -6845,6 +6871,7 @@ def _update_global_reference(
                 implementation_module,
                 module_source,
                 scope_cache,
+                budget=budget,
             ).encode("ascii"),
         )
         for item in dataclass_fields(value):
@@ -6987,6 +7014,7 @@ def _update_global_reference(
                         reference_module,
                         source,
                         scope_cache,
+                        budget=budget,
                     ).encode("ascii"),
                 )
         return
@@ -7032,6 +7060,7 @@ def _update_global_reference(
                 owner_module,
                 module_source,
                 scope_cache,
+                budget=budget,
             ).encode("ascii"),
         )
         _update_stable_value(digest, value.value, budget=budget, depth=depth + 1)
@@ -7175,6 +7204,7 @@ def _update_global_reference(
             reference_module,
             module_source,
             scope_cache,
+            budget=budget,
         )
         _digest_field(
             digest,
@@ -8198,6 +8228,7 @@ def _update_external_class_member_function(
             module_name,
             module_source,
             scope_cache,
+            budget=budget,
         ).encode("ascii"),
     )
     budget.external_class_member_runtime_depth += 1
@@ -8312,6 +8343,7 @@ def _update_external_class_member_provenance(
                 module_name,
                 module_source,
                 scope_cache,
+                budget=budget,
             ).encode("ascii"),
         )
         _digest_field(
@@ -8344,6 +8376,8 @@ def _cached_scope_identity(
     module_name: str,
     source_path: Path,
     cache: dict[str, str],
+    *,
+    budget: _TargetIdentityBudget,
 ) -> str:
     key = _scope_cache_key(module_name, source_path)
     value = cache.get(key)
@@ -8351,7 +8385,7 @@ def _cached_scope_identity(
         if cache.get(_SOURCE_ONLY_SCOPE_CACHE_MARKER) == "1":
             value = _source_module_identity(module_name, source_path)
         else:
-            value = _executable_scope_fingerprint(module_name, source_path)
+            value = _executable_scope_fingerprint(module_name, source_path, budget=budget)
         cache[key] = value
     return value
 
@@ -9059,15 +9093,32 @@ def _read_regular_source_bytes(path: Path) -> bytes:
     return source
 
 
-def _executable_scope_fingerprint(module_name: str, source_path: Path) -> str:
+def _executable_scope_fingerprint(
+    module_name: str,
+    source_path: Path,
+    *,
+    budget: _TargetIdentityBudget | None = None,
+) -> str:
     """Hash one relocation-stable top-level module or complete package scope."""
 
     scope = _executable_scope(module_name, source_path)
+    limits = _package_entry_limits(scope.logical_name)
+    if budget is not None:
+        previous = budget.package_entry_limits.get(scope.logical_name)
+        if previous is not None:
+            _verify_package_entry_limits(previous)
+        else:
+            budget.package_entry_limits[scope.logical_name] = limits
     entries = (
-        _package_entries(scope.roots)
+        _package_entries(
+            scope.roots,
+            max_entries=limits.max_entries,
+            max_paths=limits.max_paths,
+        )
         if scope.roots
         else (_PackageEntry(source_path.name, source_path),)
     )
+    _verify_package_entry_limits(limits)
     if not entries:
         raise PluginExecutableIdentityError(
             f"plug-in module {module_name!r} has no fingerprintable package files"
@@ -9078,6 +9129,10 @@ def _executable_scope_fingerprint(module_name: str, source_path: Path) -> str:
     _digest_field(digest, scope.logical_name.encode("utf-8"))
     _digest_field(digest, len(scope.roots).to_bytes(8, "big", signed=False))
     _digest_field(digest, module_name.encode("utf-8"))
+    if limits.declared_entries is not None:
+        _digest_field(digest, b"package-entry-limit.v1")
+        _digest_field(digest, limits.max_entries.to_bytes(8, "big"))
+        _digest_field(digest, limits.max_paths.to_bytes(8, "big"))
     total_bytes = 0
     for entry in entries:
         relative = entry.relative
@@ -9113,9 +9168,8 @@ def _executable_scope_fingerprint(module_name: str, source_path: Path) -> str:
         try:
             with path.open("rb") as stream:
                 opened = os.fstat(stream.fileno())
-                if (
-                    not stat.S_ISREG(opened.st_mode)
-                    or not _same_file_object(before, opened)
+                if not stat.S_ISREG(opened.st_mode) or not _same_file_object(
+                    before, opened
                 ):
                     raise PluginExecutableIdentityError(
                         f"plug-in package file {relative!r} changed before reading"
@@ -9158,6 +9212,7 @@ def _executable_scope_fingerprint(module_name: str, source_path: Path) -> str:
                 f"plug-in package file {relative!r} changed while fingerprinting"
             )
         total_bytes += actual_bytes
+    _verify_package_entry_limits(limits)
     prefix = "module-sha256" if scope.kind == "module" else "package-sha256"
     return f"{prefix}:{digest.hexdigest()}"
 
@@ -9292,15 +9347,16 @@ def _scope_roots(
 ) -> tuple[Path, ...]:
     """Validate and canonicalize every search root for one package scope."""
 
+    limits = _package_entry_limits(logical_name)
     raw_locations: list[str] = []
     try:
         if isinstance(locations, (str, bytes)):
             raise TypeError("search locations must be an iterable of paths")
         for item in locations:
-            if len(raw_locations) >= MAX_PLUGIN_PACKAGE_PATHS:
+            if len(raw_locations) >= limits.max_paths:
                 raise PluginExecutableIdentityError(
                     "plug-in package exceeds the executable identity path limit of "
-                    f"{MAX_PLUGIN_PACKAGE_PATHS}"
+                    f"{limits.max_paths}"
                 )
             raw_locations.append(str(item))
     except PluginExecutableIdentityError:
@@ -9332,16 +9388,78 @@ def _scope_roots(
             f"plug-in package {logical_name!r} search locations do not contain "
             "its defining module"
         )
+    _verify_package_entry_limits(limits)
     return tuple(roots)
 
 
-def _package_entries(roots: tuple[Path, ...]) -> tuple[_PackageEntry, ...]:
+def _package_entry_limits(module_name: str) -> _PackageEntryLimits:
+    module = sys.modules.get(module_name)
+    if module is not None and not isinstance(module, ModuleType):
+        raise PluginExecutableIdentityError(
+            "package entry limits require a loaded module"
+        )
+    namespace = (
+        ModuleType.__dict__["__dict__"].__get__(module, ModuleType)
+        if module is not None else {}
+    )
+    if "PLUGIN_PACKAGE_ENTRY_LIMIT" not in namespace:
+        return _PackageEntryLimits(
+            module_name,
+            module,
+            None,
+            MAX_PLUGIN_PACKAGE_FILES,
+            MAX_PLUGIN_PACKAGE_PATHS,
+        )
+    declared = namespace["PLUGIN_PACKAGE_ENTRY_LIMIT"]
+    if type(declared) is not int or not 1 <= declared <= _MAX_DECLARED_PACKAGE_ENTRIES:
+        raise PluginExecutableIdentityError(
+            "PLUGIN_PACKAGE_ENTRY_LIMIT must be an exact integer between "
+            f"1 and {_MAX_DECLARED_PACKAGE_ENTRIES}"
+        )
+    return _PackageEntryLimits(
+        module_name,
+        module,
+        declared,
+        declared,
+        max(MAX_PLUGIN_PACKAGE_PATHS, 2 * declared),
+    )
+
+
+def _verify_package_entry_limits(expected: _PackageEntryLimits) -> None:
+    current = _package_entry_limits(expected.module_name)
+    if (
+        current.module is not expected.module
+        or current.declared_entries != expected.declared_entries
+        or current.max_entries != expected.max_entries
+        or current.max_paths != expected.max_paths
+    ):
+        raise PluginExecutableIdentityError(
+            "plug-in package entry limits changed while fingerprinting"
+        )
+
+
+def _verify_package_entry_limit_snapshots(budget: _TargetIdentityBudget) -> None:
+    for limits in budget.package_entry_limits.values():
+        _verify_package_entry_limits(limits)
+
+
+def _package_entries(
+    roots: tuple[Path, ...],
+    *,
+    max_entries: int | None = None,
+    max_paths: int | None = None,
+) -> tuple[_PackageEntry, ...]:
+    max_entries = MAX_PLUGIN_PACKAGE_FILES if max_entries is None else max_entries
+    max_paths = MAX_PLUGIN_PACKAGE_PATHS if max_paths is None else max_paths
     entries: list[_PackageEntry] = []
     pending: list[tuple[int, Path, Path, Path]] = [
-        (index, root, root, Path())
-        for index, root in reversed(tuple(enumerate(roots)))
+        (index, root, root, Path()) for index, root in reversed(tuple(enumerate(roots)))
     ]
     examined_paths = len(roots)
+    if examined_paths > max_paths:
+        raise PluginExecutableIdentityError(
+            f"plug-in package exceeds the executable identity path limit of {max_paths}"
+        )
     try:
         while pending:
             root_index, root, directory, relative_directory = pending.pop()
@@ -9349,10 +9467,10 @@ def _package_entries(roots: tuple[Path, ...]) -> tuple[_PackageEntry, ...]:
                 children = []
                 for child in scan:
                     examined_paths += 1
-                    if examined_paths > MAX_PLUGIN_PACKAGE_PATHS:
+                    if examined_paths > max_paths:
                         raise PluginExecutableIdentityError(
                             "plug-in package exceeds the executable identity "
-                            f"path limit of {MAX_PLUGIN_PACKAGE_PATHS}"
+                            f"path limit of {max_paths}"
                         )
                     children.append(child)
                 children.sort(key=lambda item: item.name)
@@ -9384,6 +9502,7 @@ def _package_entries(roots: tuple[Path, ...]) -> tuple[_PackageEntry, ...]:
                             alias_kind=kind,
                             alias_target=target,
                         ),
+                        max_entries=max_entries,
                     )
                     continue
                 if child.is_dir(follow_symlinks=False):
@@ -9401,16 +9520,16 @@ def _package_entries(roots: tuple[Path, ...]) -> tuple[_PackageEntry, ...]:
                             None,
                             entry_kind="directory",
                         ),
+                        max_entries=max_entries,
                     )
-                    pending.append(
-                        (root_index, root, path, local_relative)
-                    )
+                    pending.append((root_index, root, path, local_relative))
                     continue
                 if not child.is_file(follow_symlinks=False):
                     continue
                 _append_package_entry(
                     entries,
                     _PackageEntry(relative_text, path),
+                    max_entries=max_entries,
                 )
     except OSError as error:
         raise PluginExecutableIdentityError(
@@ -9422,12 +9541,15 @@ def _package_entries(roots: tuple[Path, ...]) -> tuple[_PackageEntry, ...]:
 def _append_package_entry(
     entries: list[_PackageEntry],
     entry: _PackageEntry,
+    *,
+    max_entries: int | None = None,
 ) -> None:
+    max_entries = MAX_PLUGIN_PACKAGE_FILES if max_entries is None else max_entries
     entries.append(entry)
-    if len(entries) > MAX_PLUGIN_PACKAGE_FILES:
+    if len(entries) > max_entries:
         raise PluginExecutableIdentityError(
             "plug-in package exceeds the executable identity entry limit of "
-            f"{MAX_PLUGIN_PACKAGE_FILES}"
+            f"{max_entries}"
         )
 
 

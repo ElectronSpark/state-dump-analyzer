@@ -86,6 +86,27 @@ exercised by the [synthetic core extension suite](../docs/plugin-api-validation.
 Those tests include ordinary protocol objects; inheriting `AnalyzerPluginBase`
 is convenient for this teaching slice, but is not a runtime requirement.
 
+### Package entry limit
+
+[`rsl_demo_plugin/__init__.py`](rsl_demo_plugin/__init__.py) declares
+`PLUGIN_PACKAGE_ENTRY_LIMIT = 4_096`, retaining the default fingerprint quota.
+To admit a larger plug-in package, edit that source declaration to
+`PLUGIN_PACKAGE_ENTRY_LIMIT = 16_384` and validate it in a fresh process:
+
+```text
+router-dump-plugin-validate demo_router --artifact demo/fixtures/minimal-status.jsonl --node-hint router-1 --metadata platform=demo-router-os --metadata software_version=1
+python -m unittest tests.test_plugin_package_limits -v
+```
+
+The top-level import-scope module owns this exact-integer policy, not the
+manifest or a host-only setting. Its accepted range is 1 through 65,536;
+booleans are invalid. The 16,384-entry declaration permits 32,768 examined
+paths. File, aggregate-byte, path-length, and alias safety bounds stay unchanged.
+Spawned workers import the source declaration, and a later policy mutation
+invalidates executable identity. See the
+[author guide](../docs/plugin-author-guide.md#package-entry-limits) for namespace
+ownership and the unchanged safety limits.
+
 ### Host output budget
 
 The teaching fixture fits the default 4,096-unit output limit. A host admitting

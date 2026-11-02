@@ -28,6 +28,14 @@ class _ExecutableScope:
     logical_name: str
     roots: tuple[Path, ...]
 
+@dataclass(frozen=True, slots=True)
+class _PackageEntryLimits:
+    module_name: str
+    module: ModuleType | None
+    declared_entries: int | None
+    max_entries: int
+    max_paths: int
+
 @dataclass(slots=True)
 class _NativeExportIndex:
     module: ModuleType
@@ -104,6 +112,7 @@ class _TargetIdentityBudget:
     bind_exact_object_tokens: bool = ...
     root_scope_identity: str | None = ...
     external_class_member_runtime_depth: int = ...
+    package_entry_limits: dict[str, _PackageEntryLimits] = field(default_factory=dict)
 
 @dataclass(frozen=True, slots=True)
 class _RuntimeImportBinding:

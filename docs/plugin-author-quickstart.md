@@ -104,6 +104,13 @@ evidence with `SourceRecordEmission`, and use `derive_event_uid` for event
 identity. Choose timestamp semantics that match your device. Each behavior is
 exercised by the example's tests.
 
+The example's top-level `__init__.py` declares
+`PLUGIN_PACKAGE_ENTRY_LIMIT = 4_096`, the default package fingerprint quota.
+For a larger package, edit that declaration to `16_384` and rerun validation
+and the golden tests. This is plug-in source policy; see
+[package entry limits](plugin-author-guide.md#package-entry-limits) for bounds,
+import-scope ownership, and process verification.
+
 The teaching schema uses `PropertyDescriptor(validate_type=True)` for its
 string properties. For nested properties, CTF decoding, package-wide version
 preflight or query-time projections, follow the

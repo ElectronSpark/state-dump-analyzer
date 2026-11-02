@@ -2397,9 +2397,30 @@ may embed a build-host source path, so hashing it would violate relocation
 stability. A trusted loader MUST provide an immutable artifact digest if such a
 deployment is intended for durable execution.
 
-The bounds are shared across every search location: 4,096 fingerprinted
-entries (regular files, ordinary directories, or aliases), 8,192 examined
-paths, 32 MiB per file, 128 MiB total, and 4,096 UTF-8 bytes per relative path.
+The default bounds shared across every search location are 4,096 fingerprinted
+entries (regular files, ordinary directories, or aliases) and 8,192 examined
+paths. The resolved import-scope module MAY declare
+`PLUGIN_PACKAGE_ENTRY_LIMIT` as an exact built-in `int` from 1 through 65,536;
+booleans, integer subclasses, and out-of-range or other values MUST fail closed.
+An explicit entry limit derives an examined-path limit of
+`max(8_192, 2 * PLUGIN_PACKAGE_ENTRY_LIMIT)`. The owning module is the first
+regular package ancestor unless a namespace ancestor precedes it, in which
+case the first namespace ancestor owns the policy across all its search roots.
+Declarations in a nested package, the defining plug-in object, or its
+`PluginManifest` MUST NOT override that owner. A top-level regular package can
+declare `PLUGIN_PACKAGE_ENTRY_LIMIT = 16_384` in its `__init__.py`, so spawned
+workers reconstruct the policy by importing the same source. No request,
+uploaded artifact, or host-only setting supplies this override.
+
+Core MUST bind declaration presence and the effective entry/path limits to the
+package fingerprint and each executable identity derived from it. Absence
+preserves the existing default fingerprint format; an explicit `4_096`
+declaration is distinct from absence. Core MUST snapshot the owner and policy
+before enumeration and recheck them after enumeration and file reads; an
+observed mutation fails closed. Later policy changes MUST invalidate registered
+identity before execution, including in spawned workers.
+The remaining bounds are unchanged: 32 MiB per file, 128 MiB total, and 4,096
+UTF-8 bytes per relative path.
 Empty directories participate because they can change namespace imports and
 resource-existence checks. Each file read is capped at its opened-handle size
 plus a one-byte growth sentinel; handle and path identities must remain stable,

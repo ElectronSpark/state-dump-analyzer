@@ -77,6 +77,9 @@ from ._identity import (
     PLUGIN_VERSION as PLUGIN_VERSION,
 )
 
+# Package identity quota; a larger plug-in can declare, for example, 16_384.
+PLUGIN_PACKAGE_ENTRY_LIMIT = 4_096
+
 PLUGIN_ENTRY_POINT_NAME = "demo_router"
 STATUS_FILENAME = "minimal-status.jsonl"
 PARSER_ID = "demo.interface-status.v1"

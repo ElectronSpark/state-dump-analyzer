@@ -261,8 +261,8 @@ print(len(registry.process_bootstraps()), CONFIGURED_NATIVE_DECODER.configuratio
                 BabeltraceTraceDecoder,
             )
 
-            def substituted(roots):
-                for entry in entries(roots):
+            def substituted(roots, **limits):
+                for entry in entries(roots, **limits):
                     if entry.path == worker:
                         visited.append(entry.relative)
                         yield replace(entry, path=substitute)

@@ -1561,19 +1561,51 @@ the publisher in PROCESS mode by default unless the embedding separately and
 explicitly overrides it.
 
 For ordinary entry-point packages this is automatic. Keep every package or
-namespace search root inspectable and stable while it is loaded: across the
-complete scope, at most 4,096 fingerprint entries (regular files, ordinary
-directories, or validated contained link/junction aliases), at most 8,192
-examined paths, 32 MiB per
-regular file, 128 MiB total, and portable relative paths. Generated caches and
-version-control directories are ignored. The first namespace ancestor is a
-deliberately conservative boundary so parent-relative helpers cannot escape the
-identity. For the narrowest durable identity, put the exported plug-in and its
-helpers under a top-level regular package rather than below a large shared
-namespace. Do
-not replace a package's runtime `__path__` after registration; adding a valid
-search root changes its executable identity, while dropping the defining root
-is rejected.
+namespace search root inspectable and stable while it is loaded. The first
+namespace ancestor is a deliberately conservative boundary so parent-relative
+helpers cannot escape the identity. For the narrowest durable identity, put
+the exported plug-in and its helpers under a top-level regular package rather
+than below a large shared namespace. Do not replace a package's runtime
+`__path__` after registration; adding a valid search root changes its executable
+identity, while dropping the defining root is rejected.
+
+### Package entry limits
+
+Package fingerprints default to 4,096 entries (regular files, ordinary
+directories, or validated contained link/junction aliases) and 8,192 examined
+paths across the complete import scope. A larger plug-in can declare its quota
+in the top-level regular package's `__init__.py`:
+
+```python
+PLUGIN_PACKAGE_ENTRY_LIMIT = 16_384
+```
+
+The declaration must be an exact `int` from 1 through 65,536; `bool`, subclasses,
+and other values are rejected. The examined-path bound becomes
+`max(8_192, 2 * PLUGIN_PACKAGE_ENTRY_LIMIT)`. This changes no other bound:
+32 MiB per regular file, 128 MiB total, and 4,096 UTF-8 bytes per relative path.
+Only actual generated-cache and version-control directories are pruned;
+contained aliases still participate, and escaping aliases fail closed.
+
+The resolved import-scope module owns this policy. When a namespace ancestor
+precedes the defining module, its first namespace ancestor owns the quota for
+all search roots; a declaration in a nested regular package cannot narrow or
+override that policy. This is not a `PluginManifest` field, global monkeypatch,
+host-only setting, or uploaded-data option. Use a source declaration in a
+regular package so fresh spawned workers import the same policy automatically.
+Core binds declaration presence and the entry/path limits into executable
+fingerprints, snapshots the policy before enumeration, and rechecks it after
+enumeration and file reads. Changing the declaration or its live value
+invalidates the registered identity; explicitly declaring the default is
+distinct from leaving the declaration absent.
+
+The [runnable example](../demo/rsl_demo_plugin/__init__.py) explicitly declares
+`4_096`, preserving the default. Edit it to `16_384` to try the larger quota,
+then rerun `router-dump-plugin-validate demo_router` and the quickstart smoke
+commands in fresh processes. The [focused package-limit checks](plugin-api-validation.md#package-entry-limits)
+cover boundary values, scope ownership, mutation, and process verification.
+
+### Spawned execution
 
 By default, the durable servers and headless command invoke both probe and ingestion in a
 fresh child created with Python's `spawn` start method. Core serializes only a

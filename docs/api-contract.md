@@ -2040,6 +2040,16 @@ commands and control planes reject that manifest-only registry. A trusted
 deployment may admit it only with descriptor-owned
 `allow_inline_only=True`.
 
+The resolved import-scope module may declare `PLUGIN_PACKAGE_ENTRY_LIMIT` in
+plug-in source (normally the top-level regular package's `__init__.py`). It
+accepts exact integers from 1 through 65,536, excluding booleans; absent means
+4,096 entries and 8,192 examined paths. An explicit quota derives
+`max(8_192, 2 * entry_limit)` examined paths. Declaration presence and both
+limits enter executable identity and are rechecked during fingerprinting and
+spawned execution. Byte/path-length bounds and alias safety remain unchanged.
+This adds no request or manifest field: clients continue echoing the returned
+opaque identity. See the [author example](plugin-author-guide.md#package-entry-limits).
+
 When that opt-in registry can derive and revalidate package bytes but cannot
 attest a stateful subprocess target, the registration is retained only for
 explicitly trusted inline capability use. Its opaque

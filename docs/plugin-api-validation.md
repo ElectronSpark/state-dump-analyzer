@@ -99,6 +99,22 @@ configuration, admission and immutable publication, quota rejection, and
 unchanged depth/container/aggregate protections. The separate typed-property
 budget remains 4,096; changing the output budget does not expand schema bounds.
 
+### Package entry limits
+
+For the import-scope declaration `PLUGIN_PACKAGE_ENTRY_LIMIT`, run:
+
+```text
+python -m unittest tests.test_plugin_package_limits -v
+```
+
+The suite exercises the default 4,096-entry quota, a 16,384-entry declaration,
+exact-integer validation, import-scope ownership, policy mutation, and actual
+spawned process verification. The examined-path bound grows with the declared
+quota; per-file/total bytes, relative-path length, and alias protections remain
+unchanged. The [example](../demo/rsl_demo_plugin/__init__.py) declares the
+default explicitly; the [author guide](plugin-author-guide.md#package-entry-limits)
+explains where to declare a larger quota and why it belongs in source.
+
 ### Native export aliases
 
 For native dependency types exported under a name different from their type

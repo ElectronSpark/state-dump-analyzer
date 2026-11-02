@@ -1000,7 +1000,12 @@ module uses the distinct `module-sha256:` identity instead of being mislabeled
 as a one-file package. Sourceless `.pyc`/`.pyo` modules fail closed because
 embedded build paths are not relocation-stable; their loader must supply an
 immutable artifact digest. Registry-derived identities are recalculated immediately
-before plug-in execution. The manifest-only
+before plug-in execution. A package may declare `PLUGIN_PACKAGE_ENTRY_LIMIT`
+in its import-scope module to raise the default 4,096-entry quota within core's
+bounds; the source declaration follows spawned workers and is bound into
+executable identity. See [package entry limits](docs/plugin-author-guide.md#package-entry-limits)
+and their [focused checks](docs/plugin-api-validation.md#package-entry-limits).
+The manifest-only
 compatibility fallback is available only to an explicitly opted-in local/test
 registry (`allow_manifest_identity=True`). It cannot back PROCESS execution,
 but an explicitly trusted deployment may admit it with

@@ -281,6 +281,17 @@ package does not absorb an unrelated sibling distribution. A preceding
 namespace portion is necessarily conservative: every contributing search root
 enters its identity, including otherwise unrelated namespace siblings.
 
+The resolved scope module owns the optional `PLUGIN_PACKAGE_ENTRY_LIMIT`
+source declaration. Its exact-integer range is 1 through 65,536 (no booleans);
+absence keeps 4,096 entries and 8,192 examined paths, while a declaration derives
+`max(8_192, 2 * entry_limit)` examined paths across the complete scope.
+Fingerprinting binds declaration presence and the limits, snapshots the owner
+and policy, and rechecks after enumeration and file reads. Spawned workers
+import the same source policy; later mutation invalidates registered identity.
+The existing byte, path-length, and alias bounds remain in force. This is a
+plug-in package policy, not a manifest field or a host/request override; see
+the [author guide](plugin-author-guide.md#package-entry-limits).
+
 If that non-strict registry can revalidate package bytes but cannot attest a
 stateful subprocess target, registration is retained only as `inline_only`.
 It may back trusted in-process capability routing with package revalidation,

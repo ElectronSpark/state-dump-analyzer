@@ -19,6 +19,7 @@ GROUPS: dict[str, tuple[str, ...]] = {
         "plugin_api", "plugin_loading", "plugin_validation", "artifact_core",
         "canonical", "source_record_core", "contract_validation",
         "plugin_identity", "plugin_identity_runtime_imports",
+        "plugin_package_limits",
         "native_export_identity", "native_export_content",
         "contract_validation_boundaries", "resource_property_policy",
         "property_visibility", "ingestion", "ingestion_execution_boundaries", "ingestion_value_limits",
